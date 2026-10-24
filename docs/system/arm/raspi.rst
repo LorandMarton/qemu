@@ -1,5 +1,5 @@
-Raspberry Pi boards (``raspi0``, ``raspi1ap``, ``raspi2b``, ``raspi3ap``, ``raspi3b``, ``raspi4b``)
-===================================================================================================
+Raspberry Pi boards (``raspi0``, ``raspi1ap``, ``raspi2b``, ``raspi3ap``, ``raspi3b``, ``raspi4b``, ``raspicm4``)
+=================================================================================================================
 
 
 QEMU provides models of the following Raspberry Pi boards:
@@ -14,6 +14,9 @@ QEMU provides models of the following Raspberry Pi boards:
   Cortex-A53 (4 cores), 1 GiB of RAM
 ``raspi4b``
   Cortex-A72 (4 cores), 2 GiB of RAM
+``raspicm4``
+  Compute Module 4 Rev 1.0: Cortex-A72 (4 cores), 8 GiB of RAM, 76 MiB of
+  it reserved for the VideoCore as with the default firmware configuration
 
 Implemented devices
 -------------------
@@ -36,8 +39,8 @@ Implemented devices
  * VideoCore firmware (property)
  * Peripheral SPI controller (SPI)
  * Broadcom Serial Controller (I2C)
- * PCIe Root Complex (raspi4b)
- * GENET Ethernet Controller (raspi4b)
+ * PCIe Root Complex (raspi4b, raspicm4)
+ * GENET Ethernet Controller (raspi4b, raspicm4)
 
 Missing devices
 ---------------

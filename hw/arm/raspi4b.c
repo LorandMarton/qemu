@@ -84,6 +84,37 @@ static void raspi4b_machine_init(MachineState *machine)
     raspi_base_machine_init(machine, &soc->parent_obj);
 }
 
+/*
+ * Compute Module 4: as the 4B, with the RAM size of the board revision
+ * and the 76 MiB VideoCore carve-out of the default firmware config.
+ */
+static void raspicm4_machine_init(MachineState *machine)
+{
+    Raspi4bMachineState *s = RASPI4B_MACHINE(machine);
+    RaspiBaseMachineState *s_base = RASPI_BASE_MACHINE(machine);
+    RaspiBaseMachineClass *mc = RASPI_BASE_MACHINE_GET_CLASS(machine);
+    BCM2838State *soc = &s->soc;
+
+    s_base->binfo.board_id = mc->board_rev;
+
+    object_initialize_child(OBJECT(machine), "soc", soc,
+                            board_soc_type(mc->board_rev));
+    object_property_set_uint(OBJECT(soc), "vcram-size", 76 * MiB,
+                             &error_abort);
+    raspi_base_machine_init(machine, &soc->parent_obj);
+}
+
+static void raspicm4_machine_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    RaspiBaseMachineClass *rmc = RASPI_BASE_MACHINE_CLASS(oc);
+
+    rmc->board_rev = 0xd03140; /* Revision 1.0, 8 GiB RAM */
+    raspi_machine_class_common_init(mc, rmc->board_rev);
+    mc->auto_create_sdcard = true;
+    mc->init = raspicm4_machine_init;
+}
+
 static void raspi4b_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -103,9 +134,17 @@ static const TypeInfo raspi4b_machine_type = {
     .is_available   = target_aarch64,
 };
 
+static const TypeInfo raspicm4_machine_type = {
+    .name           = MACHINE_TYPE_NAME("raspicm4"),
+    .parent         = TYPE_RASPI4B_MACHINE,
+    .class_init     = raspicm4_machine_class_init,
+    .is_available   = target_aarch64,
+};
+
 static void raspi4b_machine_register_type(void)
 {
     type_register_static(&raspi4b_machine_type);
+    type_register_static(&raspicm4_machine_type);
 }
 
 type_init(raspi4b_machine_register_type)

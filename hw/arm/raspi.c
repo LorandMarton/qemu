@@ -102,6 +102,7 @@ static const char *board_type(uint32_t board_rev)
     static const char *types[] = {
         "A", "B", "A+", "B+", "2B", "Alpha", "CM1", NULL, "3B", "Zero",
         "CM3", NULL, "Zero W", "3B+", "3A+", NULL, "CM3+", "4B",
+        "Zero 2 W", "400", "Compute Module 4",
     };
     assert(FIELD_EX32(board_rev, REV_CODE, STYLE)); /* Only new style */
     int bt = FIELD_EX32(board_rev, REV_CODE, TYPE);
