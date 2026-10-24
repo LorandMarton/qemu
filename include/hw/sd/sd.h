@@ -138,6 +138,8 @@ struct SDCardClass {
     bool (*get_cmd_line)(SDState *sd);
     bool (*get_inserted)(SDState *sd);
     bool (*get_readonly)(SDState *sd);
+    /* Optional: card interrupt (SDIO, DAT[1]) asserted */
+    bool (*get_card_interrupt)(SDState *sd);
     void (*set_cid)(SDState *sd);
     void (*set_csd)(SDState *sd, uint64_t size);
 
@@ -162,6 +164,8 @@ struct SDBusClass {
      */
     void (*set_inserted)(DeviceState *dev, bool inserted);
     void (*set_readonly)(DeviceState *dev, bool readonly);
+    /* Optional: the card interrupt (SDIO, DAT[1]) changed */
+    void (*set_card_interrupt)(DeviceState *dev, bool level);
 };
 
 /* Functions to be used by qdevified callers (working via
@@ -234,5 +238,11 @@ void sdbus_reparent_card(SDBus *from, SDBus *to);
 /* Functions to be used by SD devices to report back to qdevified controllers */
 void sdbus_set_inserted(SDBus *sd, bool inserted);
 void sdbus_set_readonly(SDBus *sd, bool inserted);
+/**
+ * sdbus_set_card_interrupt: SDIO card interrupt
+ * @sd: bus
+ * @level: true while the card signals an interrupt
+ */
+void sdbus_set_card_interrupt(SDBus *sd, bool level);
 
 #endif /* HW_SD_H */

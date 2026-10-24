@@ -263,11 +263,22 @@ void sdbus_set_readonly(SDBus *sdbus, bool readonly)
     }
 }
 
+void sdbus_set_card_interrupt(SDBus *sdbus, bool level)
+{
+    SDBusClass *sbc = SD_BUS_GET_CLASS(sdbus);
+    BusState *qbus = BUS(sdbus);
+
+    trace_sdbus_set_card_interrupt(sdbus_name(sdbus), level);
+    if (sbc->set_card_interrupt) {
+        sbc->set_card_interrupt(qbus->parent, level);
+    }
+}
+
 void sdbus_reparent_card(SDBus *from, SDBus *to)
 {
     SDState *card = get_card(from);
     SDCardClass *sc;
-    bool readonly;
+    bool readonly, interrupt;
 
     /* We directly reparent the card object rather than implementing this
      * as a hotpluggable connection because we don't want to expose SD cards
@@ -283,11 +294,18 @@ void sdbus_reparent_card(SDBus *from, SDBus *to)
 
     sc = SDMMC_COMMON_GET_CLASS(card);
     readonly = sc->get_readonly(card);
+    interrupt = sc->get_card_interrupt && sc->get_card_interrupt(card);
 
+    if (interrupt) {
+        sdbus_set_card_interrupt(from, false);
+    }
     sdbus_set_inserted(from, false);
     qdev_set_parent_bus(DEVICE(card), &to->qbus, &error_abort);
     sdbus_set_inserted(to, true);
     sdbus_set_readonly(to, readonly);
+    if (interrupt) {
+        sdbus_set_card_interrupt(to, true);
+    }
 }
 
 static const TypeInfo sd_bus_types[] = {

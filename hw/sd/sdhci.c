@@ -287,6 +287,26 @@ static void sdhci_set_inserted(DeviceState *dev, bool level)
     }
 }
 
+/* Card Interrupt status follows the card's interrupt while enabled */
+static void sdhci_update_card_int(SDHCIState *s)
+{
+    if (s->card_int && (s->norintstsen & SDHC_NISEN_CARDINT)) {
+        s->norintsts |= SDHC_NIS_CARDINT;
+    } else {
+        s->norintsts &= ~SDHC_NIS_CARDINT;
+    }
+}
+
+static void sdhci_set_card_interrupt(DeviceState *dev, bool level)
+{
+    SDHCIState *s = (SDHCIState *)dev;
+
+    trace_sdhci_card_interrupt(level);
+    s->card_int = level;
+    sdhci_update_card_int(s);
+    sdhci_update_irq(s);
+}
+
 static void sdhci_set_readonly(DeviceState *dev, bool level)
 {
     SDHCIState *s = (SDHCIState *)dev;
@@ -1397,6 +1417,7 @@ sdhci_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         MASKED_WRITE(s->errintstsen, mask >> 16, value >> 16);
         s->norintsts &= s->norintstsen;
         s->errintsts &= s->errintstsen;
+        sdhci_update_card_int(s);
         if (s->errintsts) {
             s->norintsts |= SDHC_NIS_ERR;
         } else {
@@ -1605,6 +1626,13 @@ static bool sdhci_pending_insert_vmstate_needed(void *opaque)
     return s->pending_insert_state;
 }
 
+static bool sdhci_card_int_vmstate_needed(void *opaque)
+{
+    SDHCIState *s = opaque;
+
+    return s->card_int;
+}
+
 static bool sdhci_sdma_boundary_paused_vmstate_needed(void *opaque)
 {
     SDHCIState *s = opaque;
@@ -1618,6 +1646,7 @@ static int sdhci_pre_load(void *opaque)
 
     s->hostctl2 = 0;
     s->sdma_boundary_paused = false;
+    s->card_int = false;
     return 0;
 }
 
@@ -1649,6 +1678,17 @@ static const VMStateDescription sdhci_sdma_boundary_paused_vmstate = {
     .needed = sdhci_sdma_boundary_paused_vmstate_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(sdma_boundary_paused, SDHCIState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription sdhci_card_int_vmstate = {
+    .name = "sdhci/card-int",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdhci_card_int_vmstate_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(card_int, SDHCIState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1694,6 +1734,7 @@ const VMStateDescription sdhci_vmstate = {
         &sdhci_hostctl2_vmstate,
         &sdhci_pending_insert_vmstate,
         &sdhci_sdma_boundary_paused_vmstate,
+        &sdhci_card_int_vmstate,
         NULL
     },
 };
@@ -1787,6 +1828,7 @@ static void sdhci_bus_class_init(ObjectClass *klass, const void *data)
 
     sbc->set_inserted = sdhci_set_inserted;
     sbc->set_readonly = sdhci_set_readonly;
+    sbc->set_card_interrupt = sdhci_set_card_interrupt;
 }
 
 /* --- qdev i.MX eSDHC --- */

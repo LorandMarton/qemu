@@ -14,6 +14,120 @@
 #define TYPE_SDMMC_COMMON "sdmmc-common"
 DECLARE_OBJ_CHECKERS(SDState, SDCardClass, SDMMC_COMMON, TYPE_SDMMC_COMMON)
 
+typedef struct SDProto SDProto;
+
+#define RPMB_STUFF_LEN      196
+#define RPMB_KEY_MAC_LEN    32
+#define RPMB_DATA_LEN       256     /* one RPMB block is half a sector */
+#define RPMB_NONCE_LEN      16
+#define RPMB_HASH_LEN       284
+
+typedef struct QEMU_PACKED {
+    uint8_t stuff_bytes[RPMB_STUFF_LEN];
+    uint8_t key_mac[RPMB_KEY_MAC_LEN];
+    uint8_t data[RPMB_DATA_LEN];
+    uint8_t nonce[RPMB_NONCE_LEN];
+    uint32_t write_counter;
+    uint16_t address;
+    uint16_t block_count;
+    uint16_t result;
+    uint16_t req_resp;
+} RPMBDataFrame;
+
+QEMU_BUILD_BUG_MSG(sizeof(RPMBDataFrame) != 512,
+                   "invalid RPMBDataFrame size");
+
+/*
+ * The memory card state, here so that other card models on the SD bus
+ * (sdio.c) can subclass TYPE_SDMMC_COMMON.
+ */
+struct SDState {
+    DeviceState parent_obj;
+
+    /* SD Memory Card Registers */
+    uint32_t ocr;
+    uint8_t scr[8];
+    uint8_t cid[16];
+    uint8_t csd[16];
+    uint16_t rca;
+    uint32_t card_status;
+    uint8_t sd_status[64];
+    union {
+        uint8_t ext_csd[512];
+        struct {
+            uint8_t ext_csd_rw[192]; /* Modes segment */
+            uint8_t ext_csd_ro[320]; /* Properties segment */
+        };
+    };
+
+    /* Static properties */
+
+    uint8_t spec_version;
+    uint64_t boot_part_size;
+    uint64_t rpmb_part_size;
+    BlockBackend *blk;
+    uint8_t boot_config;
+
+    const SDProto *proto;
+
+    /* Runtime changeables */
+
+    int32_t state;    /* current card state, one of SDCardStates */
+    uint32_t vhs;
+    bool wp_switch;
+    unsigned long *wp_group_bmap;
+    int32_t wp_group_bits;
+    uint64_t size;
+    uint32_t blk_len;
+    uint32_t multi_blk_cnt;
+    uint32_t erase_start;
+    uint32_t erase_end;
+    uint8_t pwd[16];
+    uint32_t pwd_len;
+    uint8_t function_group[6];
+    uint8_t current_cmd;
+    const char *last_cmd_name;
+    /*
+     * True if we will handle the next command as an ACMD. Note that this does
+     * *not* track the APP_CMD status bit!
+     */
+    bool expecting_acmd;
+    uint32_t blk_written;
+
+    uint64_t data_start;
+    uint32_t data_offset;
+    size_t data_size;
+    uint8_t data[512];
+    /*
+     * CMD18/CMD25 data, so that a multi-block transfer is one host I/O
+     * instead of one per block. Reads: mb_buf holds mb_len bytes from card
+     * address mb_start, filled at the first block of the transfer. Writes
+     * (mb_dirty): blocks received but not yet written, committed when the
+     * CMD23 count is reached, the buffer is full or the next command
+     * arrives. Not migrated: the write side is flushed in pre_save, the read
+     * side refilled on demand.
+     */
+    uint8_t *mb_buf;
+    uint64_t mb_start;
+    uint32_t mb_len;
+    bool mb_dirty;
+    struct {
+        uint32_t write_counter;
+        uint8_t key[RPMB_KEY_MAC_LEN];
+        uint8_t key_set;
+        RPMBDataFrame result;
+    } rpmb;
+    QEMUTimer *ocr_power_timer;
+    uint8_t dat_lines;
+    bool cmd_line;
+    char *preset_auth_key;
+    /* eMMC identity taken from a real part ("cid", "ext-csd" properties) */
+    char *cid_hex;
+    char *ext_csd_hex;
+    uint8_t preset_cid[15];
+    uint8_t preset_ext_csd[512];
+};
+
 /*
  * EXT_CSD Modes segment
  *

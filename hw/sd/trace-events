@@ -20,8 +20,10 @@ sdbus_write(const char *bus_name, const char *hexdump) "@%s data %s"
 sdbus_set_voltage(const char *bus_name, uint16_t millivolts) "@%s %u (mV)"
 sdbus_get_dat_lines(const char *bus_name, uint8_t dat_lines) "@%s dat_lines: %u"
 sdbus_get_cmd_line(const char *bus_name, bool cmd_line) "@%s cmd_line: %u"
+sdbus_set_card_interrupt(const char *bus_name, bool level) "@%s level %u"
 
 # sdhci.c
+sdhci_card_interrupt(bool level) "level %u"
 sdhci_set_inserted(const char *level) "card state changed: %s"
 sdhci_send_command(uint8_t cmd, uint32_t arg) "CMD%02u ARG[0x%08x]"
 sdhci_error(const char *msg) "%s"
@@ -76,3 +78,11 @@ pl181_data_engine_idle(void) "data engine idle"
 # aspeed_sdhci.c
 aspeed_sdhci_read(uint64_t addr, uint32_t size, uint64_t data) "@0x%" PRIx64 " size %u: 0x%" PRIx64
 aspeed_sdhci_write(uint64_t addr, uint32_t size, uint64_t data) "@0x%" PRIx64 " size %u: 0x%" PRIx64
+
+# sdio.c
+sdio_card_command(uint8_t cmd, uint32_t arg, uint32_t state) "CMD%02u arg 0x%08x state %u"
+sdio_card_cmd52(const char *dir, unsigned fn, uint32_t addr, uint8_t value) "%s F%u 0x%05x 0x%02x"
+sdio_card_cmd53(const char *dir, unsigned fn, uint32_t addr, uint32_t len, bool incr) "%s F%u 0x%05x %u bytes incr %u"
+sdio_card_abort(unsigned fn) "F%u"
+sdio_card_reset(void) ""
+sdio_card_irq(bool level) "level %u"
