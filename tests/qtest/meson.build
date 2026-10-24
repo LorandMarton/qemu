@@ -302,6 +302,7 @@ qtests_aarch64 = \
    ['iommu-smmuv3-test'] : []) + \
   (config_all_devices.has_key('CONFIG_WDT_SBSA') ? ['sbsa-gwdt-test'] : []) + \
   (config_all_devices.has_key('CONFIG_RASPI') ? ['bcm2838-asb-test', 'bcm2838-emmc2-test',
+                                                  'bcm2838-pcie-test',
                                                   'bcm2838-thermal-test',
                                                   'bcm2838-uart-test', 'raspi4-test'] : []) + \
   qtests_cxl +                                                                                  \

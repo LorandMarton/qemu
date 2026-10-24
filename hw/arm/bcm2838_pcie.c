@@ -48,6 +48,19 @@ static PCIDevice *bcm2838_pcie_ext_cfg_dev(BCM2838PcieHostState *s,
                            PCIE_MMCFG_DEVFN(mmcfg_addr));
 }
 
+/* A link trains only with an endpoint behind the root port */
+static bool bcm2838_pcie_link_up(BCM2838PcieHostState *s)
+{
+    PCIBus *bus = pci_bridge_get_sec_bus(PCI_BRIDGE(&s->root_port));
+
+    for (int devfn = 0; devfn < ARRAY_SIZE(bus->devices); devfn++) {
+        if (bus->devices[devfn]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint64_t bcm2838_pcie_host_read(void *opaque, hwaddr offset,
                                        unsigned size) {
     uint64_t value = ~0;
@@ -80,6 +93,10 @@ static uint64_t bcm2838_pcie_host_read(void *opaque, hwaddr offset,
             break;
         default:
             value = ldn_le_p(root_regs + offset - PCIE_CONFIG_SPACE_SIZE, size);
+            if (offset == BCM2838_PCIE_MISC_STATUS &&
+                !bcm2838_pcie_link_up(s)) {
+                value &= ~BCM2838_PCIE_STATUS_LINK;
+            }
         }
     } else {
         qemu_log_mask(
