@@ -1044,10 +1044,13 @@ F: hw/*/bcm283*
 F: include/hw/arm/rasp*
 F: include/hw/*/bcm283*
 F: hw/rtc/pcf85063.c
+F: hw/sd/bcm4345*
+F: include/hw/sd/bcm4345.h
 F: docs/system/arm/raspi.rst
 F: tests/functional/arm/test_raspi2.py
 F: tests/functional/aarch64/test_raspi*.py
 F: tests/qtest/bcm283*-test.c
+F: tests/qtest/bcm4345-test.c
 F: tests/qtest/pcf85063-test.c
 F: tests/qtest/raspi*-test.c
 

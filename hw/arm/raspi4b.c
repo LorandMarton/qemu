@@ -21,6 +21,8 @@
 #include "hw/arm/boot.h"
 #include "qom/object.h"
 #include "hw/arm/bcm2838.h"
+#include "hw/sd/bcm4345.h"
+#include "net/net.h"
 #include "qemu/guest-random.h"
 #include <libfdt.h>
 
@@ -180,6 +182,7 @@ static void raspicm4_machine_init(MachineState *machine)
     RaspiBaseMachineClass *mc = RASPI_BASE_MACHINE_GET_CLASS(machine);
     BCM2838State *soc = &s->soc;
     g_autofree char *user_pins = NULL, *pins = NULL;
+    DeviceState *wlan;
     Object *gpio;
 
     s_base->binfo.modify_dtb = raspi4_fw_modify_dtb;
@@ -197,6 +200,13 @@ static void raspicm4_machine_init(MachineState *machine)
     object_property_set_str(gpio, "pins", pins, &error_abort);
 
     raspi_base_machine_init(machine, &soc->parent_obj);
+
+    /* The wireless chip, on SD1 (pins 34-39), its radio a NIC */
+    wlan = qdev_new(TYPE_BCM4345);
+    object_property_add_child(OBJECT(machine), "wlan", OBJECT(wlan));
+    qemu_configure_nic_device(wlan, false, NULL);
+    qdev_realize_and_unref(wlan, BUS(&soc->peripherals.parent_obj.sdhci.sdbus),
+                           &error_fatal);
 }
 
 /* No monitor on the module: the firmware reports no display */

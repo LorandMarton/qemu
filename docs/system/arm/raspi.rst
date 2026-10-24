@@ -46,6 +46,7 @@ Implemented devices
  * xHCI USB host controller, interface version 1.1 with 64-byte contexts,
    one USB 2.0 port (raspi4b, raspicm4)
  * AXI bridge (ASB) controls of the power domains (raspi4b, raspicm4)
+ * BCM4345/6 (CYW43455) wireless LAN on SDIO (raspicm4)
 
 Missing devices
 ---------------
@@ -205,3 +206,34 @@ Linux reports the time as invalid until the guest sets it. For example, on
 BSC0::
 
   -device pcf85063,bus=i2c-bus.0,power-lost=on
+
+Wireless LAN
+------------
+
+The ``raspicm4`` wireless chip, a BCM4345/6 on the Arasan SDHCI (GPIO 34 to
+39), is a QEMU NIC model, ``bcm4345``. Linux ``brcmfmac`` drives it as on
+the board: it downloads the firmware image, NVRAM and CLM blob it finds in
+the guest filesystem, and the model then acts as that firmware, version
+7.45.241. The identity, capabilities, iovars, firmware commands and events
+are those of the chip on a Compute Module 4: station, access point with
+WPA2-PSK (the 4-way handshake runs in the host, ``hostapd`` or
+``wpa_supplicant``), 2.4 GHz HT20 and 5 GHz up to VHT80, scans, ARP and
+IPv6 neighbour discovery offload in station mode, RSSI events.
+
+The air is the NIC's network backend: 802.11 frames with a radiotap header
+(channel, signal, transmit power). Guests whose ``bcm4345`` NICs share a
+backend, for example a socket multicast group, see each other's access
+points and can associate::
+
+  -nic socket,model=bcm4345,mac=e4:5f:01:51:45:a1,mcast=230.0.0.1:5400,localaddr=127.0.0.1
+
+The transmit power is the one the host sets (``qtxpower``) within the
+board limits of the NVRAM (``maxp2ga0``, ``maxp5ga0``). The received signal
+is that power less the receiver's ``path-loss`` property in dB (default 75),
+which can be changed at run time::
+
+  (qemu) qom-set /machine/wlan path-loss 95
+
+Frames are not encrypted on the air (the keys stay in the model), and there
+is no airtime or retransmission model: throughput is that of the backend.
+Bluetooth (the chip's UART part, on UART0) is not modelled.

@@ -14,6 +14,10 @@ config SDIO
     bool
     select SD
 
+config BCM4345
+    bool
+    select SDIO
+
 config SDHCI
     bool
     select SD

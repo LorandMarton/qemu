@@ -86,3 +86,25 @@ sdio_card_cmd53(const char *dir, unsigned fn, uint32_t addr, uint32_t len, bool 
 sdio_card_abort(unsigned fn) "F%u"
 sdio_card_reset(void) ""
 sdio_card_irq(bool level) "level %u"
+
+# bcm4345.c
+bcm4345_send(unsigned channel, size_t len) "to host: channel %u, %zu bytes"
+bcm4345_receive(unsigned channel, size_t len) "from host: channel %u, %zu bytes"
+bcm4345_firmware(const char *state) "%s"
+bcm4345_bp_read(uint32_t addr, uint32_t val) "0x%08x: 0x%08x"
+bcm4345_bp_write(uint32_t addr, uint32_t val) "0x%08x: 0x%08x"
+
+# bcm4345-wl.c
+bcm4345_wl_control(const char *dir, uint32_t cmd, const char *var, int ret) "%s %u %s: %d"
+bcm4345_wl_event(uint32_t type, uint32_t status, unsigned bss) "event %u status %u bss %u"
+bcm4345_wl_clm(uint32_t len, int ret) "CLM blob, %u bytes: %d"
+bcm4345_wl_scan(uint32_t channels) "%u channels"
+bcm4345_wl_scan_done(uint32_t status) "status %u"
+bcm4345_wl_transmit(unsigned ifidx, size_t len) "interface %u, %zu bytes"
+bcm4345_wl_air_tx(uint16_t fc, unsigned freq, size_t len) "fc 0x%04x %u MHz len %zu"
+bcm4345_wl_air_rx(uint16_t fc, unsigned freq, size_t len, int rssi) "fc 0x%04x %u MHz len %zu rssi %d"
+bcm4345_wl_join(unsigned ssid_len, unsigned nchan) "SSID of %u bytes, %u channels"
+bcm4345_wl_join_done(unsigned event, unsigned status) "event %u status %u"
+bcm4345_wl_link_down(unsigned event, unsigned reason) "event %u reason %u"
+bcm4345_wl_ap(unsigned ssid_len, unsigned chanspec) "SSID of %u bytes, chanspec 0x%04x"
+bcm4345_wl_scb(unsigned aid, unsigned state) "station %u state %u"
