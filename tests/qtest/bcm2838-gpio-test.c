@@ -3,7 +3,8 @@
  *
  * Pin levels from the pulls, external drive ("gpioN" properties) and the
  * output latch; edge and level event detection and the bank interrupts;
- * the reset state from "pins"; the SPI chip enables through the pin mux.
+ * the reset state from "pins"; the SPI chip enables through the pin mux;
+ * the pin line protocol on the "chardev" property.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -13,6 +14,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qapi/error.h"
+#include "qemu/sockets.h"
 
 #define GPIO_BASE       0xfe200000
 #define GPFSEL0         0x00
@@ -303,6 +305,145 @@ static void test_pins(void)
     qtest_quit(qts);
 }
 
+#ifndef _WIN32
+typedef struct PinSocket {
+    QTestState *qts;
+    char *dir, *path;
+    int fd;
+    GString *buf;
+} PinSocket;
+
+static void pin_connect(PinSocket *p)
+{
+    p->fd = unix_connect(p->path, &error_abort);
+    g_string_truncate(p->buf, 0);
+}
+
+static void pin_init(PinSocket *p)
+{
+    p->dir = g_dir_make_tmp("bcm2838-gpio-XXXXXX", NULL);
+    g_assert(p->dir);
+    p->path = g_build_filename(p->dir, "gpio.sock", NULL);
+    p->qts = qtest_initf("-M raspi4b "
+                         "-chardev socket,id=gpio,path=%s,server=on,wait=off "
+                         "-global bcm2838-gpio.chardev=gpio", p->path);
+    p->buf = g_string_new(NULL);
+    pin_connect(p);
+}
+
+static void pin_cleanup(PinSocket *p)
+{
+    close(p->fd);
+    qtest_quit(p->qts);
+    unlink(p->path);
+    rmdir(p->dir);
+    g_free(p->path);
+    g_free(p->dir);
+    g_string_free(p->buf, true);
+}
+
+static void pin_send(PinSocket *p, const char *line)
+{
+    g_assert_cmpint(write(p->fd, line, strlen(line)), ==, strlen(line));
+}
+
+/* The next line from QEMU */
+static char *pin_recv(PinSocket *p)
+{
+    char *nl;
+
+    while (!(nl = memchr(p->buf->str, '\n', p->buf->len))) {
+        GPollFD pfd = { .fd = p->fd, .events = G_IO_IN };
+        char chunk[256];
+        ssize_t n;
+
+        g_assert_cmpint(g_poll(&pfd, 1, 10000), ==, 1);
+        n = read(p->fd, chunk, sizeof(chunk));
+        g_assert_cmpint(n, >, 0);
+        g_string_append_len(p->buf, chunk, n);
+    }
+    {
+        size_t len = nl - p->buf->str;
+        char *line = g_strndup(p->buf->str, len);
+
+        g_string_erase(p->buf, 0, len + 1);
+        return line;
+    }
+}
+
+static void pin_expect(PinSocket *p, const char *line)
+{
+    g_autofree char *got = pin_recv(p);
+
+    g_assert_cmpstr(got, ==, line);
+}
+
+/* Wait until a drive sent on the socket has reached the pin */
+static void pin_wait_level(PinSocket *p, int pin, bool hi)
+{
+    for (int i = 0; i < 10000 && level(p->qts, pin) != hi; i++) {
+        g_usleep(1000);
+    }
+    g_assert_cmpint(level(p->qts, pin), ==, hi);
+}
+
+static void test_chardev(void)
+{
+    PinSocket p;
+
+    pin_init(&p);
+
+    /* Drive: pin 5 resets to pull-up */
+    pin_send(&p, "5 low\n");
+    pin_wait_level(&p, 5, false);
+    pin_send(&p, " 5\tnone\r\n");
+    pin_wait_level(&p, 5, true);
+
+    /* Outputs: the direction and every latch change */
+    set_fsel(p.qts, 17, FSEL_OUTPUT);
+    pin_expect(&p, "17 low");
+    qtest_writel(p.qts, GPIO_BASE + GPSET0, BIT(17));
+    pin_expect(&p, "17 high");
+    /* Neither an unchanged latch nor the latch of an input is reported */
+    qtest_writel(p.qts, GPIO_BASE + GPSET0, BIT(17) | BIT(18));
+    qtest_writel(p.qts, GPIO_BASE + GPCLR0, BIT(17));
+    pin_expect(&p, "17 low");
+    /* The outside drive of an output is not reported; it shows as an input */
+    pin_send(&p, "17 high\n");
+    set_fsel(p.qts, 17, FSEL_INPUT);
+    pin_expect(&p, "17 none");
+    pin_wait_level(&p, 17, true);
+
+    /* Bad commands */
+    pin_send(&p, "58 high\n");
+    pin_expect(&p, "error: expected PIN high|low|none");
+    pin_send(&p, "5 on\n5\n\n");
+    pin_expect(&p, "error: expected PIN high|low|none");
+    pin_expect(&p, "error: expected PIN high|low|none");
+    pin_send(&p, "5 high                                      low\n");
+    pin_expect(&p, "error: expected PIN high|low|none");
+
+    /* A new connection gets the outputs first */
+    set_fsel(p.qts, 40, FSEL_OUTPUT);
+    qtest_writel(p.qts, GPIO_BASE + GPSET0 + 4, BIT(40 - 32));
+    pin_expect(&p, "40 low");
+    pin_expect(&p, "40 high");
+    set_fsel(p.qts, 22, FSEL_OUTPUT);
+    pin_expect(&p, "22 low");
+    close(p.fd);
+    pin_connect(&p);
+    pin_expect(&p, "22 low");
+    pin_expect(&p, "40 high");
+
+    /* A reset makes them inputs */
+    qtest_system_reset(p.qts);
+    pin_expect(&p, "22 none");
+    pin_expect(&p, "40 none");
+
+    pin_cleanup(&p);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -314,6 +455,9 @@ int main(int argc, char **argv)
     qtest_add_func("/bcm2838-gpio/level-detect", test_level_detect);
     qtest_add_func("/bcm2838-gpio/pins", test_pins);
     qtest_add_func("/bcm2838-gpio/spi-ce", test_spi_ce);
+#ifndef _WIN32
+    qtest_add_func("/bcm2838-gpio/chardev", test_chardev);
+#endif
 
     return g_test_run();
 }

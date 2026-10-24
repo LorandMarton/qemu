@@ -84,6 +84,17 @@ for example the ``gpio=`` lines of ``config.txt``::
 
   -global bcm2838-gpio.pins=19:op:pd:hi,20:ip:pu:hi
 
+The ``chardev`` property of the GPIO controller connects the pins to a
+program outside QEMU, one ``PIN DRIVE`` line per change in each direction,
+``DRIVE`` being ``high``, ``low`` or ``none``. A line received drives the pin
+like ``gpioN``. A line sent tells how the SoC drives the pin: ``high`` or
+``low`` while it is a GPIO output, ``none`` once it is not. When the other
+end connects it is sent the state of every output. A malformed line is
+answered with a line starting with ``error:``. For example::
+
+  -chardev socket,id=gpio,path=gpio.sock,server=on,wait=off \
+  -global bcm2838-gpio.chardev=gpio
+
 The BCM2711 die temperature is the ``temperature`` property of the thermal
 sensor, in millidegrees Celsius (25000 by default; the range the 10-bit
 sensor code covers, -88161 to 410040); the guest reads the nearest code, and

@@ -14,6 +14,7 @@
 #ifndef BCM2838_GPIO_H
 #define BCM2838_GPIO_H
 
+#include "chardev/char-fe.h"
 #include "hw/sd/sd.h"
 #include "hw/core/sysbus.h"
 #include "qom/object.h"
@@ -64,6 +65,12 @@ struct BCM2838GpioState {
     uint64_t reset_out;
     uint32_t reset_pup[GPIO_PUP_PDN_CNTRL_NUM];
 
+    /* Pin line protocol on "chardev" */
+    CharFrontend chr;
+    uint64_t chr_out;       /* outputs last reported */
+    uint64_t chr_latch;     /* and their levels */
+    char chr_line[32];      /* command being received */
+    uint32_t chr_len;       /* its length, sizeof(chr_line): too long */
 };
 
 #endif

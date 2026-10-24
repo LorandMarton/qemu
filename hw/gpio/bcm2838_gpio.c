@@ -22,6 +22,7 @@
 #include "hw/gpio/bcm2838_gpio.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "qemu/cutils.h"
 
 #define GPFSEL0   0x00
@@ -310,6 +311,8 @@ static void gpio_update_spi_cs(BCM2838GpioState *s)
     }
 }
 
+static void gpio_chr_report(BCM2838GpioState *s, bool all);
+
 /* Recompute the levels, latch edge and level events, update the IRQs */
 static void gpio_update(BCM2838GpioState *s)
 {
@@ -331,6 +334,7 @@ static void gpio_update(BCM2838GpioState *s)
     gpio_update_irq(s);
     gpio_update_uart_cts(s);
     gpio_update_spi_cs(s);
+    gpio_chr_report(s, false);
 }
 
 /* An SPI controller's chip enable output, for its pin's CE function */
@@ -460,6 +464,114 @@ static void gpio_set_pin(Object *obj, Visitor *v, const char *name,
         }
     }
     error_setg(errp, "%s: '%s' is not one of high, low, none", name, value);
+}
+
+/*
+ * "chardev": the pins as a line protocol, PIN DRIVE per line, DRIVE one of
+ * high, low, none. Received lines set the external drive, like the "gpioN"
+ * properties. Sent lines tell how the SoC drives a pin: high or low for a
+ * GPIO output, none when the pin is not one. All outputs are sent when the
+ * other end connects, then every change.
+ */
+static uint64_t gpio_outputs(BCM2838GpioState *s)
+{
+    uint64_t out = 0;
+
+    for (int i = 0; i < BCM2838_GPIO_NUM; i++) {
+        if (s->fsel[i] == BCM2838_FSEL_GPIO_OUT) {
+            out |= BIT_ULL(i);
+        }
+    }
+    return out;
+}
+
+static void gpio_chr_report(BCM2838GpioState *s, bool all)
+{
+    uint64_t out = gpio_outputs(s);
+    uint64_t latch = ((uint64_t)s->lev1 << 32 | s->lev0) & out;
+    uint64_t changed = all ? out : (out ^ s->chr_out) | (latch ^ s->chr_latch);
+    g_autoptr(GString) msg = NULL;
+
+    s->chr_out = out;
+    s->chr_latch = latch;
+    if (!changed || !qemu_chr_fe_backend_connected(&s->chr)) {
+        return;
+    }
+    msg = g_string_new(NULL);
+    for (int i = 0; i < BCM2838_GPIO_NUM; i++) {
+        if (changed & BIT_ULL(i)) {
+            int drive = !(out & BIT_ULL(i)) ? GPIO_EXT_NONE :
+                        latch & BIT_ULL(i) ? GPIO_EXT_HIGH : GPIO_EXT_LOW;
+
+            g_string_append_printf(msg, "%d %s\n", i, gpio_drive_names[drive]);
+        }
+    }
+    /* blocks while the other end does not read, rather than lose a change */
+    qemu_chr_fe_write_all(&s->chr, (uint8_t *)msg->str, msg->len);
+}
+
+/* A received line: PIN DRIVE, or empty */
+static bool gpio_chr_command(BCM2838GpioState *s, char *line)
+{
+    g_auto(GStrv) f = g_strsplit_set(g_strstrip(line), " \t", -1);
+    uint64_t pin;
+
+    if (!f[0] || !*f[0]) {
+        return true;
+    }
+    if (g_strv_length(f) != 2 || qemu_strtou64(f[0], NULL, 10, &pin) ||
+        pin >= BCM2838_GPIO_NUM) {
+        return false;
+    }
+    for (int i = 0; i < ARRAY_SIZE(gpio_drive_names); i++) {
+        if (!strcmp(f[1], gpio_drive_names[i])) {
+            s->ext[pin] = i;
+            gpio_update(s);
+            return true;
+        }
+    }
+    return false;
+}
+
+static int gpio_chr_can_receive(void *opaque)
+{
+    return sizeof(((BCM2838GpioState *)opaque)->chr_line);
+}
+
+static void gpio_chr_receive(void *opaque, const uint8_t *buf, int size)
+{
+    static const char err[] = "error: expected PIN high|low|none\n";
+    BCM2838GpioState *s = opaque;
+
+    for (int i = 0; i < size; i++) {
+        if (buf[i] != '\n') {
+            if (s->chr_len < sizeof(s->chr_line) - 1) {
+                s->chr_line[s->chr_len++] = buf[i];
+            } else {
+                s->chr_len = sizeof(s->chr_line);
+            }
+            continue;
+        }
+        if (s->chr_len < sizeof(s->chr_line)) {
+            s->chr_line[s->chr_len] = '\0';
+        }
+        if (s->chr_len == sizeof(s->chr_line) ||
+            !gpio_chr_command(s, s->chr_line)) {
+            qemu_chr_fe_write_all(&s->chr, (const uint8_t *)err,
+                                  sizeof(err) - 1);
+        }
+        s->chr_len = 0;
+    }
+}
+
+static void gpio_chr_event(void *opaque, QEMUChrEvent event)
+{
+    BCM2838GpioState *s = opaque;
+
+    if (event == CHR_EVENT_OPENED) {
+        s->chr_len = 0;
+        gpio_chr_report(s, true);
+    }
 }
 
 /* qdev GPIO inputs: other devices driving a pin (level 0/1) */
@@ -701,6 +813,17 @@ static void bcm2838_gpio_reset(DeviceState *dev)
     gpio_update_irq(s);
     gpio_update_uart_cts(s);
     gpio_update_spi_cs(s);
+    gpio_chr_report(s, false);
+}
+
+static int bcm2838_gpio_post_load(void *opaque, int version_id)
+{
+    BCM2838GpioState *s = opaque;
+
+    /* what the other end has seen is not migrated: report changes only */
+    s->chr_out = gpio_outputs(s);
+    s->chr_latch = ((uint64_t)s->lev1 << 32 | s->lev0) & s->chr_out;
+    return 0;
 }
 
 static const MemoryRegionOps bcm2838_gpio_ops = {
@@ -731,6 +854,7 @@ static const VMStateDescription vmstate_bcm2838_gpio = {
     .name = "bcm2838_gpio",
     .version_id = 2,
     .minimum_version_id = 2,
+    .post_load = bcm2838_gpio_post_load,
     .fields = (VMStateField[]) {
         VMSTATE_UINT8_ARRAY(fsel, BCM2838GpioState, BCM2838_GPIO_NUM),
         VMSTATE_UINT32(lev0, BCM2838GpioState),
@@ -814,10 +938,13 @@ static void bcm2838_gpio_realize(DeviceState *dev, Error **errp)
     if (s->pins && !gpio_parse_pins(s, errp)) {
         return;
     }
+    qemu_chr_fe_set_handlers(&s->chr, gpio_chr_can_receive, gpio_chr_receive,
+                             gpio_chr_event, NULL, s, NULL, true);
 }
 
 static const Property bcm2838_gpio_properties[] = {
     DEFINE_PROP_STRING("pins", BCM2838GpioState, pins),
+    DEFINE_PROP_CHR("chardev", BCM2838GpioState, chr),
 };
 
 static void bcm2838_gpio_class_init(ObjectClass *klass, const void *data)
