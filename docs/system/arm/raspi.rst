@@ -68,3 +68,7 @@ The BCM2711 clock manager runs from a 54 MHz crystal and comes out of reset
 in the state the firmware leaves it for the kernel on a Compute Module 4
 (the ARM at 600 MHz, the PL011 UARTs at 48 MHz, EMMC2 at 100 MHz), so the
 rates Linux computes from its registers are the ones the devices run at.
+When the firmware configuration (the file the ``vc-config`` property of
+``bcm2835-property`` names, as ``vcgencmd get_config`` reads it) has
+``enable_uart=1``, the core clock stays at its rate when the guest asks for
+another one: the firmware keeps the mini UART's baud rate.

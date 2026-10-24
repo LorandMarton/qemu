@@ -22,6 +22,49 @@
 
 #define VCHI_BUSADDR_SIZE       sizeof(uint32_t)
 
+/*
+ * Firmware clocks of the BCM2711 as listed by GET_CLOCKS, with the boot
+ * rate and the limits the firmware reports (arm_freq=1500, core_freq=500,
+ * gpu_freq=500 defaults); from a CM4's /sys/kernel/debug/clk/fw-clk-*.
+ */
+static const struct {
+    uint32_t id, rate, min, max;
+} bcm2711_fw_clocks[] = {
+    { RPI_FIRMWARE_ARM_CLK_ID,       1500000000, 600000000, 1500000000 },
+    { RPI_FIRMWARE_CORE_CLK_ID,       500000000, 200000000,  500000000 },
+    { RPI_FIRMWARE_V3D_CLK_ID,        250000000, 250000000,  500000000 },
+    { RPI_FIRMWARE_ISP_CLK_ID,        250000000, 250000000,  500000000 },
+    { RPI_FIRMWARE_PIXEL_CLK_ID,              0,         0, 2400000000 },
+    { RPI_FIRMWARE_HEVC_CLK_ID,       250000000, 250000000,  500000000 },
+    { RPI_FIRMWARE_M2MC_CLK_ID,       120000000, 120000000,  600000000 },
+    { RPI_FIRMWARE_PIXEL_BVB_CLK_ID,   75000000,  75000000,  324000000 },
+    { RPI_FIRMWARE_VEC_CLK_ID,                0,         0,  108000000 },
+};
+
+/* Whether the firmware configuration (vc-config) has the line @line */
+static bool bcm2835_property_config_has(BCM2835PropertyState *s,
+                                        const char *line)
+{
+    g_auto(GStrv) lines = s->vc_config ?
+                          g_strsplit(s->vc_config, "\n", -1) : NULL;
+
+    return lines && g_strv_contains((const char * const *)lines, line);
+}
+
+static int bcm2711_fw_clock(BCM2835PropertyState *s, uint32_t id)
+{
+    /* PROCESSOR field of the revision code: 3 is the BCM2711 */
+    if (((s->board_rev >> 12) & 0xf) != 3) {
+        return -1;
+    }
+    for (int i = 0; i < ARRAY_SIZE(bcm2711_fw_clocks); i++) {
+        if (bcm2711_fw_clocks[i].id == id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 /* https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface */
 
 static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
@@ -128,7 +171,20 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
         case RPI_FWREQ_GET_CLOCK_RATE:
         case RPI_FWREQ_GET_MAX_CLOCK_RATE:
         case RPI_FWREQ_GET_MIN_CLOCK_RATE:
-            switch (ldl_le_phys(&s->dma_as, value + 12)) {
+        {
+            uint32_t id = ldl_le_phys(&s->dma_as, value + 12);
+            int fw = bcm2711_fw_clock(s, id);
+
+            if (fw >= 0) {
+                stl_le_phys(&s->dma_as, value + 16,
+                            tag == RPI_FWREQ_GET_MIN_CLOCK_RATE ?
+                            bcm2711_fw_clocks[fw].min :
+                            tag == RPI_FWREQ_GET_MAX_CLOCK_RATE ?
+                            bcm2711_fw_clocks[fw].max : s->clk_rate[id]);
+                resplen = 8;
+                break;
+            }
+            switch (id) {
             case RPI_FIRMWARE_EMMC_CLK_ID:
                 stl_le_phys(&s->dma_as, value + 16, RPI_FIRMWARE_EMMC_CLK_RATE);
                 break;
@@ -145,8 +201,20 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
             }
             resplen = 8;
             break;
+        }
 
         case RPI_FWREQ_GET_CLOCKS:
+            if (bcm2711_fw_clock(s, RPI_FIRMWARE_ARM_CLK_ID) >= 0) {
+                /* (parent, id) pairs, zero-terminated by the guest buffer */
+                for (int i = 0; i < ARRAY_SIZE(bcm2711_fw_clocks) &&
+                     8 * (i + 1) <= bufsize; i++) {
+                    stl_le_phys(&s->dma_as, value + 12 + 8 * i, 0);
+                    stl_le_phys(&s->dma_as, value + 16 + 8 * i,
+                                bcm2711_fw_clocks[i].id);
+                    resplen = 8 * (i + 1);
+                }
+                break;
+            }
             /* TODO: add more clock IDs if needed */
             stl_le_phys(&s->dma_as, value + 12, 0);
             stl_le_phys(&s->dma_as, value + 16, RPI_FIRMWARE_ARM_CLK_ID);
@@ -154,6 +222,29 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
             break;
 
         case RPI_FWREQ_SET_CLOCK_RATE:
+        {
+            uint32_t id = ldl_le_phys(&s->dma_as, value + 12);
+            int fw = bcm2711_fw_clock(s, id);
+
+            if (fw >= 0) {
+                /*
+                 * Rate only: guest-visible, no effect on emulation speed.
+                 * With enable_uart=1 the firmware keeps the core clock, which
+                 * the mini UART's baud rate derives from, at its boot rate.
+                 */
+                if (id != RPI_FIRMWARE_CORE_CLK_ID ||
+                    !bcm2835_property_config_has(s, "enable_uart=1")) {
+                    s->clk_rate[id] =
+                        MIN(MAX(ldl_le_phys(&s->dma_as, value + 16),
+                                bcm2711_fw_clocks[fw].min),
+                            bcm2711_fw_clocks[fw].max);
+                }
+                stl_le_phys(&s->dma_as, value + 16, s->clk_rate[id]);
+                resplen = 8;
+                break;
+            }
+        }
+            /* fall through */
         case RPI_FWREQ_SET_MAX_CLOCK_RATE:
         case RPI_FWREQ_SET_MIN_CLOCK_RATE:
             qemu_log_mask(LOG_UNIMP,
@@ -505,12 +596,13 @@ static const MemoryRegionOps bcm2835_property_ops = {
 
 static const VMStateDescription vmstate_bcm2835_property = {
     .name = TYPE_BCM2835_PROPERTY,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_MACADDR(macaddr, BCM2835PropertyState),
         VMSTATE_UINT32(addr, BCM2835PropertyState),
         VMSTATE_BOOL(pending, BCM2835PropertyState),
+        VMSTATE_UINT32_ARRAY(clk_rate, BCM2835PropertyState, 16),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -537,6 +629,9 @@ static void bcm2835_property_reset(DeviceState *dev)
     BCM2835PropertyState *s = BCM2835_PROPERTY(dev);
 
     s->pending = false;
+    for (int i = 0; i < ARRAY_SIZE(bcm2711_fw_clocks); i++) {
+        s->clk_rate[bcm2711_fw_clocks[i].id] = bcm2711_fw_clocks[i].rate;
+    }
 }
 
 static void bcm2835_property_realize(DeviceState *dev, Error **errp)
@@ -591,6 +686,13 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
         }
     }
 
+    if (s->vc_config_file &&
+        !g_file_get_contents(s->vc_config_file, &s->vc_config, NULL, NULL)) {
+        error_setg(errp, "bcm2835_property: cannot read vc-config '%s'",
+                   s->vc_config_file);
+        return;
+    }
+
     bcm2835_property_reset(dev);
 }
 
@@ -608,6 +710,8 @@ static const Property bcm2835_property_props[] = {
     DEFINE_PROP_UINT32("firmware-variant", BCM2835PropertyState, fw_variant,
                        0),
     DEFINE_PROP_STRING("firmware-version", BCM2835PropertyState, fw_version),
+    /* text file of "name=value" lines, as "vcgencmd get_config int" prints */
+    DEFINE_PROP_STRING("vc-config", BCM2835PropertyState, vc_config_file),
     DEFINE_PROP_STRING("command-line", BCM2835PropertyState, command_line),
 };
 

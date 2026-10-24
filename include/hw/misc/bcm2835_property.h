@@ -37,8 +37,11 @@ struct BCM2835PropertyState {
     uint32_t fw_variant;
     char *fw_version;
     uint32_t fw_hash[5];
+    uint32_t clk_rate[16]; /* BCM2711 firmware clocks, by clock ID */
     uint32_t addr;
     char *command_line;
+    char *vc_config_file;
+    char *vc_config; /* "name=value" lines for vcgencmd get_config */
     bool pending;
 };
 

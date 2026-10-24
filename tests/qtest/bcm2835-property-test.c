@@ -23,6 +23,9 @@
 #define TAG_FW_REVISION     0x00000001
 #define TAG_FW_VARIANT      0x00000002
 #define TAG_FW_HASH         0x00000003
+#define TAG_SET_CLOCK_RATE  0x00038002
+#define CLK_ARM             3
+#define CLK_CORE            4
 
 /* start4.elf of 2026-09-14, as a CM4 reports it */
 #define FW_REVISION         1789397370
@@ -90,12 +93,47 @@ static void test_build(void)
     qtest_quit(qts);
 }
 
+/* SET_CLOCK_RATE of the core clock to 200 MHz; returns the rate set */
+static uint32_t set_core_clock(QTestState *qts)
+{
+    qtest_writel(qts, BUF_ADDR + 20, CLK_CORE);
+    qtest_writel(qts, BUF_ADDR + 24, 200000000);
+    qtest_writel(qts, BUF_ADDR + 28, 0);
+    property(qts, TAG_SET_CLOCK_RATE, 12);
+    return qtest_readl(qts, BUF_ADDR + 24);
+}
+
+static void test_core_clock(void)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    int fd;
+
+    /* the firmware lowers it on request */
+    qts = qtest_init("-M raspi4b");
+    g_assert_cmpuint(set_core_clock(qts), ==, 200000000);
+    qtest_quit(qts);
+
+    /* with enable_uart=1 it keeps it at the boot rate (mini UART baud) */
+    fd = g_file_open_tmp("vc-config-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_true(g_file_set_contents(path, "core_freq=500\nenable_uart=1\n",
+                                      -1, NULL));
+    close(fd);
+    qts = qtest_initf("-M raspi4b -global bcm2835-property.vc-config=%s",
+                      path);
+    g_assert_cmpuint(set_core_clock(qts), ==, 500000000);
+    qtest_quit(qts);
+    unlink(path);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("/bcm2835-property/firmware/default", test_default);
     qtest_add_func("/bcm2835-property/firmware/build", test_build);
+    qtest_add_func("/bcm2835-property/core-clock", test_core_clock);
 
     return g_test_run();
 }
