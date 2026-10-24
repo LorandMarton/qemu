@@ -180,9 +180,17 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
                     qdev_get_gpio_in(gicdev, PPI(n, VIRTUAL_PMU_IRQ)));
     }
 
-    /* Connect UART0 to the interrupt controller */
+    /* UART0 and UART2..UART5 share one interrupt (Linux: "uart-pl011") */
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->uart0), 0,
-                       qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_UART0));
+                       qdev_get_gpio_in(DEVICE(&ps->uart_irq_orgate), 0));
+    for (int i = 0; i < BCM2838_NUM_EXTRA_UARTS; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ps->uarts[i]), 0,
+                           qdev_get_gpio_in(DEVICE(&ps->uart_irq_orgate),
+                                            1 + i));
+    }
+    qdev_connect_gpio_out(DEVICE(&ps->uart_irq_orgate), 0,
+                          qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_UART0));
+
 
     /* Connect AUX / UART1 to the interrupt controller */
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->aux), 0,

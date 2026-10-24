@@ -11,6 +11,8 @@
 #include "qemu/module.h"
 #include "hw/arm/raspi_platform.h"
 #include "hw/arm/bcm2838_peripherals.h"
+#include "hw/core/qdev-properties-system.h"
+#include "system/system.h"
 
 #define RPIVID_ASB_OFFSET       0xc11000
 
@@ -58,6 +60,17 @@ static void bcm2838_peripherals_init(Object *obj)
 
     /* GPIO */
     object_initialize_child(obj, "gpio", &s->gpio, TYPE_BCM2838_GPIO);
+
+    /* UART2..UART5 */
+    for (int i = 0; i < BCM2838_NUM_EXTRA_UARTS; i++) {
+        g_autofree char *name = g_strdup_printf("uart%d", i + 2);
+
+        object_initialize_child(obj, name, &s->uarts[i], TYPE_PL011);
+    }
+    object_initialize_child(obj, "uart_irq_orgate", &s->uart_irq_orgate,
+                            TYPE_OR_IRQ);
+    object_property_set_int(OBJECT(&s->uart_irq_orgate), "num-lines",
+                            1 + BCM2838_NUM_EXTRA_UARTS, &error_abort);
 
     /* AXI bridges of the PM power domains */
     object_initialize_child(obj, "asb", &s->asb, TYPE_BCM2838_ASB);
@@ -269,6 +282,32 @@ static void bcm2838_peripherals_realize(DeviceState *dev, Error **errp)
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->gpio), 0));
 
     object_property_add_alias(OBJECT(s), "sd-bus", OBJECT(&s->gpio), "sd-bus");
+
+    /*
+     * UART2..UART5 (PL011, clocked like UART0): -serial 3..6 after UART0
+     * and the mini UART. Each is a 0x200 window of the PL011's 4 KiB
+     * region, so that UART5 does not cover SDHOST at 0x202000.
+     */
+    for (int i = 0; i < BCM2838_NUM_EXTRA_UARTS; i++) {
+        g_autofree char *name = g_strdup_printf("uart%d", i + 2);
+
+        qdev_connect_clock_in(DEVICE(&s->uarts[i]), "clk",
+                              qdev_get_clock_out(DEVICE(&s_base->cprman),
+                                                 "uart-out"));
+        qdev_prop_set_chr(DEVICE(&s->uarts[i]), "chardev", serial_hd(2 + i));
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->uarts[i]), errp)) {
+            return;
+        }
+        memory_region_init_alias(&s->uart_mr[i], OBJECT(s), name,
+                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->uarts[i]), 0),
+                0, BCM2838_UART_STRIDE);
+        memory_region_add_subregion(&s_base->peri_mr,
+                BCM2838_UART2_OFFSET + i * BCM2838_UART_STRIDE,
+                &s->uart_mr[i]);
+    }
+    if (!qdev_realize(DEVICE(&s->uart_irq_orgate), NULL, errp)) {
+        return;
+    }
 
     /* ASB (Linux bcm2835-power checks the bridge IDs) */
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->asb), errp) ||

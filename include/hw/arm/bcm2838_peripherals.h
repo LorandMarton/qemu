@@ -57,6 +57,10 @@
 #define BCM2838_MPHI_SIZE       0x200
 
 #define GENET_OFFSET            0x1580000
+/* PL011 UART2..UART5, after UART0 at 0x201000 */
+#define BCM2838_UART2_OFFSET    0x201400
+#define BCM2838_UART_STRIDE     0x200
+#define BCM2838_NUM_EXTRA_UARTS 4
 
 #define TYPE_BCM2838_PERIPHERALS "bcm2838-peripherals"
 OBJECT_DECLARE_TYPE(BCM2838PeripheralState, BCM2838PeripheralClass,
@@ -78,6 +82,10 @@ struct BCM2838PeripheralState {
     BCM2838PcieHostState pcie_host;
     BCM2838GenetState genet;
     BCM2838GpioState gpio;
+    /* UART2..UART5; they share the UART0 interrupt (uart_irq_orgate) */
+    PL011State uarts[BCM2838_NUM_EXTRA_UARTS];
+    MemoryRegion uart_mr[BCM2838_NUM_EXTRA_UARTS];
+    OrIRQState uart_irq_orgate;
 
     OrIRQState mmc_irq_orgate;
     OrIRQState dma_7_8_irq_orgate;

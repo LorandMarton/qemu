@@ -10,6 +10,8 @@
  *
  * The mini UART divisor latch, and its rate on a host serial port.
  *
+ * UART2..UART5: 0x200 apart, on -serial 3..6, on UART0's interrupt.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -19,12 +21,15 @@
 #include "qobject/qdict.h"
 
 #define UART0           0xfe201000
+#define UART2           0xfe201400
+#define UART_STRIDE     0x200
 #define UARTDR          0x00
 #define UARTFR          0x18
 #define UARTIBRD        0x24
 #define UARTFBRD        0x28
 #define UARTLCR_H       0x2c
 #define UARTCR          0x30
+#define UARTIMSC        0x38
 #define UARTRIS         0x3c
 #define UARTICR         0x44
 
@@ -45,6 +50,15 @@
 #define CR_CTSEN        (1 << 15)
 
 #define INT_CTS         (1 << 1)
+#define INT_TX          (1 << 5)
+
+/* GIC distributor; UART0 and UART2..UART5 share SPI 121 (ID 153) */
+#define GICD            0xff841000
+#define GICD_ISPENDR    0x200
+#define GICD_ICPENDR    0x280
+#define UART_IRQ_ID     (32 + 121)
+
+#define SDHOST_SDEDM    0xfe202034
 
 #define AUX_BASE        0xfe215000
 #define AUX_MU_IO       0x40
@@ -127,6 +141,47 @@ static void test_cts_flow_control(void)
     g_assert_cmphex(uart_fr(qts) & (FR_TXFE | FR_RXFE | FR_CTS), ==,
                     FR_TXFE);
     g_assert_cmphex(qtest_readl(qts, UART0 + UARTDR) & 0xff, ==, 'c');
+
+    qtest_quit(qts);
+}
+
+static bool uart_irq_pending(QTestState *qts)
+{
+    uint32_t reg = GICD + GICD_ISPENDR + UART_IRQ_ID / 32 * 4;
+
+    return qtest_readl(qts, reg) & BIT(UART_IRQ_ID % 32);
+}
+
+static void test_extra_uarts(void)
+{
+    QTestState *qts = qtest_init("-M raspi4b -serial null -serial null "
+                                 "-chardev ringbuf,id=u2 -serial chardev:u2 "
+                                 "-chardev ringbuf,id=u3 -serial chardev:u3 "
+                                 "-chardev ringbuf,id=u4 -serial chardev:u4 "
+                                 "-chardev ringbuf,id=u5 -serial chardev:u5");
+
+    for (int n = 2; n <= 5; n++) {
+        uint32_t base = UART2 + (n - 2) * UART_STRIDE;
+        g_autofree char *id = g_strdup_printf("u%d", n);
+        g_autofree char *sent = g_strdup_printf("%d", n);
+        g_autofree char *out = NULL;
+
+        qtest_writel(qts, GICD + GICD_ICPENDR + UART_IRQ_ID / 32 * 4,
+                     BIT(UART_IRQ_ID % 32));
+        g_assert_false(uart_irq_pending(qts));
+
+        qtest_writel(qts, base + UARTCR, CR_UART_ON);
+        qtest_writel(qts, base + UARTIMSC, INT_TX);
+        qtest_writel(qts, base + UARTDR, sent[0]);
+        out = ringbuf_read(qts, id);
+        g_assert_cmpstr(out, ==, sent);
+        g_assert_true(uart_irq_pending(qts));
+
+        qtest_writel(qts, base + UARTIMSC, 0);
+    }
+
+    /* SDHOST follows UART5's window */
+    g_assert_cmphex(qtest_readl(qts, SDHOST_SDEDM), ==, 0xc60f);
 
     qtest_quit(qts);
 }
@@ -254,5 +309,6 @@ int main(int argc, char **argv)
     qtest_add_func("/bcm2838-uart/pl011/cts-flow-control",
                    test_cts_flow_control);
     qtest_add_func("/bcm2838-uart/aux/dlab", test_aux_dlab);
+    qtest_add_func("/bcm2838-uart/extra-uarts", test_extra_uarts);
     return g_test_run();
 }

@@ -41,6 +41,7 @@ Implemented devices
  * Broadcom Serial Controller (I2C)
  * PCIe Root Complex (raspi4b, raspicm4)
  * GENET Ethernet Controller (raspi4b, raspicm4)
+ * PL011 UART2 to UART5 (raspi4b, raspicm4)
  * AXI bridge (ASB) controls of the power domains (raspi4b, raspicm4)
 
 Missing devices
@@ -52,6 +53,12 @@ Missing devices
 
 Board interfaces
 ----------------
+
+Serial ports are connected in this order: ``-serial`` 1 is UART0 (PL011),
+2 the mini UART (AUX), and on ``raspi4b`` and ``raspicm4`` 3 to 6 are UART2
+to UART5. With a host serial port backend (``-chardev serial``) the baud
+rate, data bits, parity, stop bits and the RTS and DTR lines programmed by
+the guest are applied to the host port.
 
 The BCM2711 die temperature is the ``temperature`` property of the thermal
 sensor, in millidegrees Celsius (25000 by default; the range the 10-bit
