@@ -280,6 +280,19 @@ int qemu_chr_fe_write_all(CharFrontend *c, const uint8_t *buf, int len);
 int qemu_chr_fe_read_all(CharFrontend *c, uint8_t *buf, int len);
 
 /**
+ * qemu_chr_fe_read:
+ * @buf: the data buffer
+ * @len: the size of the buffer
+ *
+ * Read the data the back end has, up to @len bytes; block until there is
+ * some. Unlike @qemu_chr_fe_read_all, this does not wait for @len bytes.
+ *
+ * Returns: the number of bytes read (0 if no associated Chardev or the
+ *          connection closed) or -1 on error.
+ */
+int qemu_chr_fe_read(CharFrontend *c, uint8_t *buf, int len);
+
+/**
  * qemu_chr_fe_ioctl:
  * @cmd: see CHR_IOCTL_*
  * @arg: the data associated with @cmd

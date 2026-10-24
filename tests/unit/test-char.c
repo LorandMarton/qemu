@@ -946,6 +946,36 @@ static void char_pipe_test(void)
     g_free(tmp_path);
     g_free(pipe);
 }
+
+/* qemu_chr_fe_read() returns what the back end has, not a full buffer */
+static void char_socket_sync_read_test(void)
+{
+    gchar *tmp_path = g_dir_make_tmp("qemu-test-char.XXXXXX", NULL);
+    gchar *path = g_build_filename(tmp_path, "sock", NULL);
+    gchar *tmp = g_strdup_printf("unix:%s,server=on,wait=off", path);
+    Chardev *chr;
+    CharFrontend c;
+    uint8_t buf[16];
+    int fd;
+
+    chr = qemu_chr_new("sync-read", tmp, NULL);
+    g_assert_nonnull(chr);
+    qemu_chr_fe_init(&c, chr, &error_abort);
+
+    fd = unix_connect(path, &error_abort);
+    qemu_chr_wait_connected(chr, &error_abort);
+    g_assert_cmpint(write(fd, "abc", 3), ==, 3);
+
+    g_assert_cmpint(qemu_chr_fe_read(&c, buf, sizeof(buf)), ==, 3);
+    g_assert(memcmp(buf, "abc", 3) == 0);
+
+    close(fd);
+    qemu_chr_fe_deinit(&c, true);
+    g_assert(g_rmdir(tmp_path) == 0);
+    g_free(tmp);
+    g_free(path);
+    g_free(tmp_path);
+}
 #endif
 
 typedef struct SocketIdleData {
@@ -2008,6 +2038,7 @@ int main(int argc, char **argv)
     g_test_add_func("/char/stdio", char_stdio_test);
 #ifndef _WIN32
     g_test_add_func("/char/pipe", char_pipe_test);
+    g_test_add_func("/char/socket/sync-read", char_socket_sync_read_test);
 #endif
     g_test_add_func("/char/file", char_file_test);
 #ifndef _WIN32

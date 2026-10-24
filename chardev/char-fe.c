@@ -52,7 +52,8 @@ int qemu_chr_fe_write_all(CharFrontend *c, const uint8_t *buf, int len)
     return qemu_chr_write(s, buf, len, true);
 }
 
-int qemu_chr_fe_read_all(CharFrontend *c, uint8_t *buf, int len)
+static int qemu_chr_fe_read_common(CharFrontend *c, uint8_t *buf, int len,
+                                   bool all)
 {
     Chardev *s = c->chr;
     int offset = 0;
@@ -87,12 +88,25 @@ int qemu_chr_fe_read_all(CharFrontend *c, uint8_t *buf, int len)
         }
 
         offset += res;
+        if (!all) {
+            break;
+        }
     }
 
     if (qemu_chr_replay(s) && replay_mode == REPLAY_MODE_RECORD) {
         replay_char_read_all_save_buf(buf, offset);
     }
     return offset;
+}
+
+int qemu_chr_fe_read_all(CharFrontend *c, uint8_t *buf, int len)
+{
+    return qemu_chr_fe_read_common(c, buf, len, true);
+}
+
+int qemu_chr_fe_read(CharFrontend *c, uint8_t *buf, int len)
+{
+    return qemu_chr_fe_read_common(c, buf, len, false);
 }
 
 int qemu_chr_fe_ioctl(CharFrontend *c, int cmd, void *arg)
