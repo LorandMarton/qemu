@@ -1024,11 +1024,26 @@ uint32_t HELPER(mrs_banked)(CPUARMState *env, uint32_t tgtmode, uint32_t regno)
     }
 }
 
+/* get_arm_cp_reginfo() through the CPU's cache of recent entries */
+static const ARMCPRegInfo *cp_reginfo_cached(ARMCPU *cpu, uint32_t key)
+{
+    unsigned i = (key * 0x9e3779b9u) >> (32 - ARM_CP_REGS_CACHE_BITS);
+    const ARMCPRegInfo *ri;
+
+    if (likely(cpu->cp_regs_cache[i].key == key && cpu->cp_regs_cache[i].ri)) {
+        return cpu->cp_regs_cache[i].ri;
+    }
+    ri = get_arm_cp_reginfo(cpu->cp_regs, key);
+    cpu->cp_regs_cache[i].key = key;
+    cpu->cp_regs_cache[i].ri = ri;
+    return ri;
+}
+
 const void *HELPER(access_check_cp_reg)(CPUARMState *env, uint32_t key,
                                         uint32_t syndrome, uint32_t isread)
 {
     ARMCPU *cpu = env_archcpu(env);
-    const ARMCPRegInfo *ri = get_arm_cp_reginfo(cpu->cp_regs, key);
+    const ARMCPRegInfo *ri = cp_reginfo_cached(cpu, key);
     CPAccessResult res = CP_ACCESS_OK;
     int target_el;
     uint32_t excp;
@@ -1198,7 +1213,7 @@ const void *HELPER(access_check_cp_reg)(CPUARMState *env, uint32_t key,
 const void *HELPER(lookup_cp_reg)(CPUARMState *env, uint32_t key)
 {
     ARMCPU *cpu = env_archcpu(env);
-    const ARMCPRegInfo *ri = get_arm_cp_reginfo(cpu->cp_regs, key);
+    const ARMCPRegInfo *ri = cp_reginfo_cached(cpu, key);
 
     assert(ri != NULL);
     return ri;

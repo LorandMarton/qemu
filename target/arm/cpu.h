@@ -937,6 +937,9 @@ typedef struct {
         i_->idregs[idx_];                                               \
     })
 
+#define ARM_CP_REGS_CACHE_BITS 6
+#define ARM_CP_REGS_CACHE_SIZE (1 << ARM_CP_REGS_CACHE_BITS)
+
 /**
  * ARMCPU:
  * @env: #CPUARMState
@@ -950,6 +953,16 @@ struct ArchCPU {
 
     /* Coprocessor information */
     GHashTable *cp_regs;
+    /*
+     * The cp_regs entries last used by the TCG helpers, which look them
+     * up by key at run time: a TB may run on any CPU, so it cannot hold
+     * this CPU's ARMCPRegInfo.  The table does not change once the CPU
+     * runs, so entries never go stale.
+     */
+    struct {
+        uint32_t key;
+        const struct ARMCPRegInfo *ri;
+    } cp_regs_cache[ARM_CP_REGS_CACHE_SIZE];
     /* For marshalling (mostly coprocessor) register state between the
      * kernel and QEMU (for KVM) and between two QEMUs (for migration),
      * we use these arrays.
