@@ -29,6 +29,7 @@
 #define GIC_SPI_INTERRUPT_DMA_9_10     88
 #define GIC_SPI_INTERRUPT_AUX_UART1    93
 #define GIC_SPI_INTERRUPT_I2C          117
+#define GIC_SPI_INTERRUPT_SPI          118 /* SPI0, SPI3-6 */
 #define GIC_SPI_INTERRUPT_SDHOST       120
 #define GIC_SPI_INTERRUPT_UART0        121
 #define GIC_SPI_INTERRUPT_RNG200       125
@@ -62,6 +63,10 @@
 #define BCM2838_UART2_OFFSET    0x201400
 #define BCM2838_UART_STRIDE     0x200
 #define BCM2838_NUM_EXTRA_UARTS 4
+/* SPI3..SPI6, after SPI0 at 0x204000; no DREQ */
+#define BCM2838_SPI3_OFFSET     0x204600
+#define BCM2838_SPI_STRIDE      0x200
+#define BCM2838_NUM_EXTRA_SPIS  4
 
 #define TYPE_BCM2838_PERIPHERALS "bcm2838-peripherals"
 OBJECT_DECLARE_TYPE(BCM2838PeripheralState, BCM2838PeripheralClass,
@@ -87,6 +92,9 @@ struct BCM2838PeripheralState {
     PL011State uarts[BCM2838_NUM_EXTRA_UARTS];
     MemoryRegion uart_mr[BCM2838_NUM_EXTRA_UARTS];
     OrIRQState uart_irq_orgate;
+    /* SPI3..SPI6; they share the SPI0 interrupt (spi_irq_orgate) */
+    BCM2835SPIState spis[BCM2838_NUM_EXTRA_SPIS];
+    OrIRQState spi_irq_orgate;
 
     OrIRQState mmc_irq_orgate;
     OrIRQState dma_7_8_irq_orgate;

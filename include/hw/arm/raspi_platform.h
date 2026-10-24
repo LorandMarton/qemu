@@ -196,6 +196,10 @@ uint64_t board_ram_size(uint32_t board_rev);
 #define INTERRUPT_ARASANSDIO           62
 #define INTERRUPT_AVSPMON              63
 
+/* DMA requests (DREQ, the DMA channels' PERMAP) */
+#define DREQ_SPI_TX                    6
+#define DREQ_SPI_RX                    7
+
 /* ARM CPU IRQs use a private number space */
 #define INTERRUPT_ARM_TIMER            0
 #define INTERRUPT_ARM_MAILBOX          1

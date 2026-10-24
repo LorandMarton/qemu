@@ -75,6 +75,20 @@ static void bcm2838_peripherals_init(Object *obj)
     object_property_set_int(OBJECT(&s->uart_irq_orgate), "num-lines",
                             1 + BCM2838_NUM_EXTRA_UARTS, &error_abort);
 
+    /* SPI3..SPI6 */
+    for (int i = 0; i < BCM2838_NUM_EXTRA_SPIS; i++) {
+        g_autofree char *name = g_strdup_printf("bcm2835-spi%d", i + 3);
+
+        g_autofree char *bus = g_strdup_printf("spi%d", i + 3);
+
+        object_initialize_child(obj, name, &s->spis[i], TYPE_BCM2835_SPI);
+        qdev_prop_set_string(DEVICE(&s->spis[i]), "bus-name", bus);
+    }
+    object_initialize_child(obj, "spi_irq_orgate", &s->spi_irq_orgate,
+                            TYPE_OR_IRQ);
+    object_property_set_int(OBJECT(&s->spi_irq_orgate), "num-lines",
+                            1 + BCM2838_NUM_EXTRA_SPIS, &error_abort);
+
     /* AXI bridges of the PM power domains */
     object_initialize_child(obj, "asb", &s->asb, TYPE_BCM2838_ASB);
     object_initialize_child(obj, "rpivid-asb", &s->rpivid_asb,
@@ -309,6 +323,19 @@ static void bcm2838_peripherals_realize(DeviceState *dev, Error **errp)
                 &s->uart_mr[i]);
     }
     if (!qdev_realize(DEVICE(&s->uart_irq_orgate), NULL, errp)) {
+        return;
+    }
+
+    /* SPI3..SPI6 */
+    for (int i = 0; i < BCM2838_NUM_EXTRA_SPIS; i++) {
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->spis[i]), errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s_base->peri_mr,
+                BCM2838_SPI3_OFFSET + i * BCM2838_SPI_STRIDE,
+                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->spis[i]), 0));
+    }
+    if (!qdev_realize(DEVICE(&s->spi_irq_orgate), NULL, errp)) {
         return;
     }
 

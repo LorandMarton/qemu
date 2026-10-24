@@ -37,7 +37,8 @@ Implemented devices
  * USB2 host controller (DWC2 and MPHI)
  * MailBox controller (MBOX)
  * VideoCore firmware (property)
- * Peripheral SPI controller (SPI)
+ * Peripheral SPI controller (SPI), also in DMA mode; SPI3 to SPI6 on
+   raspi4b and raspicm4
  * Broadcom Serial Controller (I2C)
  * PCIe Root Complex (raspi4b, raspicm4)
  * GENET Ethernet Controller (raspi4b, raspicm4)
@@ -117,6 +118,14 @@ address. For example, a device at 0x48 on BSC1::
 
   -chardev socket,id=sensor,path=sensor.sock,server=on,wait=off \
   -device i2c-chardev,bus=i2c-bus.1,address=0x48,chardev=sensor
+
+On ``raspi4b`` and ``raspicm4`` the SPI chip selects go through the GPIO
+pins: an SPI device with chip select index ``cs`` N (``-device ...,cs=N``)
+follows the CE N pin of its controller, GPIO 8 and 7 for SPI0, 0 and 24 for
+SPI3, 4 and 25 for SPI4, 12 and 26 for SPI5, 18 and 27 for SPI6. In the
+pin's SPI function the controller drives it, otherwise it is a GPIO (Linux
+``cs-gpios``) or follows its pull. SPI0's bus is ``spi``, the others are
+``spi3`` to ``spi6``.
 
 The BCM2711 die temperature is the ``temperature`` property of the thermal
 sensor, in millidegrees Celsius (25000 by default; the range the 10-bit

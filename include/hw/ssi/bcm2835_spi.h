@@ -26,6 +26,7 @@
 #include "hw/ssi/ssi.h"
 #include "qom/object.h"
 #include "qemu/fifo8.h"
+#include "qemu/timer.h"
 
 #define TYPE_BCM2835_SPI "bcm2835-spi"
 OBJECT_DECLARE_SIMPLE_TYPE(BCM2835SPIState, BCM2835_SPI)
@@ -52,6 +53,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2835SPIState, BCM2835_SPI)
 #define BCM2835_SPI_CS_TXD      BIT(18)
 #define BCM2835_SPI_CS_RXD      BIT(17)
 #define BCM2835_SPI_CS_DONE     BIT(16)
+#define BCM2835_SPI_CS_CSPOL0   BIT(21)
 #define BCM2835_SPI_CS_LEN      BIT(13)
 #define BCM2835_SPI_CS_REN      BIT(12)
 #define BCM2835_SPI_CS_INTR     BIT(10)
@@ -61,14 +63,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2835SPIState, BCM2835_SPI)
 #define BCM2835_SPI_CLEAR_RX    BIT(5)
 #define BCM2835_SPI_CLEAR_TX    BIT(4)
 
+/* chip selects with a pin, CE0 and CE1 */
+#define BCM2835_SPI_NUM_CE      2
+
+/* DREQ outputs, to the DMA controller */
+#define BCM2835_SPI_DREQ_TX     0
+#define BCM2835_SPI_DREQ_RX     1
+
 struct BCM2835SPIState {
     /* <private> */
     SysBusDevice parent_obj;
 
     /* <public> */
     SSIBus *bus;
+    char *bus_name;
+    uint32_t clock_hz;
     MemoryRegion iomem;
     qemu_irq irq;
+    qemu_irq dreq[2];
+    qemu_irq ce[BCM2835_SPI_NUM_CE];    /* the controller's chip enables */
 
     uint32_t cs;
     uint32_t clk;
@@ -78,4 +91,6 @@ struct BCM2835SPIState {
 
     Fifo8 tx_fifo;
     Fifo8 rx_fifo;
+    QEMUTimer shift_timer;  /* shifts the TX FIFO out when the guest does not */
+    bool fifo_accessed;     /* the FIFO was accessed since CS was last read */
 };

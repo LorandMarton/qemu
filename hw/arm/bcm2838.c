@@ -217,6 +217,31 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
     qdev_connect_gpio_out(DEVICE(&ps_base->orgated_i2c_irq_splitter), 1,
                           qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_I2C));
 
+    /* SPI0 and SPI3..SPI6 share one interrupt */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->spi[0]), 0,
+                       qdev_get_gpio_in(DEVICE(&ps->spi_irq_orgate), 0));
+    for (int i = 0; i < BCM2838_NUM_EXTRA_SPIS; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ps->spis[i]), 0,
+                           qdev_get_gpio_in(DEVICE(&ps->spi_irq_orgate),
+                                            1 + i));
+    }
+    qdev_connect_gpio_out(DEVICE(&ps->spi_irq_orgate), 0,
+                          qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_SPI));
+
+    /* SPI chip selects through their pins: CE0 and CE1 of each controller */
+    for (int i = 0; i < 1 + BCM2838_NUM_EXTRA_SPIS; i++) {
+        DeviceState *spi = DEVICE(i ? &ps->spis[i - 1] : &ps_base->spi[0]);
+
+        for (int n = 0; n < BCM2835_SPI_NUM_CE; n++) {
+            int cs = i * BCM2835_SPI_NUM_CE + n;
+
+            qdev_connect_gpio_out_named(spi, "ce", n,
+                    qdev_get_gpio_in_named(DEVICE(&ps->gpio), "spi-ce", cs));
+            qdev_connect_gpio_out_named(DEVICE(&ps->gpio), "spi-cs", cs,
+                    qdev_get_gpio_in_named(spi, "cs", n));
+        }
+    }
+
     /* Connect VC mailbox to the interrupt controller */
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->mboxes), 0,
                        qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_MBOX));

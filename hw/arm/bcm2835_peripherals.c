@@ -146,6 +146,9 @@ static void raspi_peripherals_base_init(Object *obj)
 
     object_property_add_const_link(OBJECT(&s->dma), "dma-mr",
                                    OBJECT(&s->gpu_bus_mr));
+    /* the peripherals that pace their DMA; the others' transfers run unpaced */
+    qdev_prop_set_uint32(DEVICE(&s->dma), "dreq-inputs",
+                         BIT(DREQ_SPI_TX) | BIT(DREQ_SPI_RX));
 
     /* Mphi */
     object_initialize_child(obj, "mphi", &s->mphi, TYPE_BCM2835_MPHI);
@@ -484,6 +487,14 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
                        qdev_get_gpio_in_named(DEVICE(&s->ic),
                                               BCM2835_IC_GPU_IRQ,
                                               INTERRUPT_SPI));
+    qdev_connect_gpio_out_named(DEVICE(&s->spi[0]), "dreq",
+                                BCM2835_SPI_DREQ_TX,
+                                qdev_get_gpio_in_named(DEVICE(&s->dma), "dreq",
+                                                       DREQ_SPI_TX));
+    qdev_connect_gpio_out_named(DEVICE(&s->spi[0]), "dreq",
+                                BCM2835_SPI_DREQ_RX,
+                                qdev_get_gpio_in_named(DEVICE(&s->dma), "dreq",
+                                                       DREQ_SPI_RX));
 
     /* I2C */
     for (n = 0; n < 3; n++) {
