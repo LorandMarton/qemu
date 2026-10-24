@@ -26,6 +26,8 @@ struct BCM2835PowerMgtState {
     uint32_t rsts;
     uint32_t wdog;
     QEMUTimer *wdog_timer;
+    /* PM_IMAGE, PM_GRAFX, PM_PROC power domain controls */
+    uint32_t domain[3];
 };
 
 #endif

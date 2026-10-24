@@ -25,6 +25,39 @@ static const hwaddr aon_autoi2c_offset[BCM2838_NUM_HDMI] = {
     0xf00b00, 0xf05b00
 };
 
+/* Display pipeline and GPU */
+static const hwaddr pixelvalve_offset[BCM2838_NUM_PIXELVALVES] = {
+    0x206000, 0x207000, 0x20a000, 0xc12000, 0x216000
+};
+static const hwaddr hdmi_offset[BCM2838_NUM_HDMI][BCM2838_HDMI_NUM_REGIONS] = {
+    [0] = {
+        [BCM2838_HDMI_REGION_HDMI] = 0xf00700,
+        [BCM2838_HDMI_REGION_DVP] = 0xf00300,
+        [BCM2838_HDMI_REGION_PHY] = 0xf00f00,
+        [BCM2838_HDMI_REGION_RM] = 0xf00f80,
+        [BCM2838_HDMI_REGION_PACKET] = 0xf01b00,
+        [BCM2838_HDMI_REGION_METADATA] = 0xf01f00,
+        [BCM2838_HDMI_REGION_CSC] = 0xf00200,
+        [BCM2838_HDMI_REGION_CEC] = 0xf04300,
+    },
+    [1] = {
+        [BCM2838_HDMI_REGION_HDMI] = 0xf05700,
+        [BCM2838_HDMI_REGION_DVP] = 0xf05300,
+        [BCM2838_HDMI_REGION_PHY] = 0xf05f00,
+        [BCM2838_HDMI_REGION_RM] = 0xf05f80,
+        [BCM2838_HDMI_REGION_PACKET] = 0xf06b00,
+        [BCM2838_HDMI_REGION_METADATA] = 0xf06f00,
+        [BCM2838_HDMI_REGION_CSC] = 0xf00280,
+        [BCM2838_HDMI_REGION_CEC] = 0xf09300,
+    },
+};
+/* L2 interrupt controller inputs, in BCM2838_HDMI_IRQ_* order */
+static const int hdmi_l2_irq[BCM2838_NUM_HDMI][BCM2838_HDMI_NUM_IRQS] = {
+    { 0, 1, 2, 3, 4, 5 },
+    { 8, 7, 6, 9, 10, 11 },
+};
+#define HDMI_HD_OFFSET          0xf20000
+#define V3D_CORE0_OFFSET        0xc04000
 
 #define PCIE_RC_OFFSET          0x1500000
 #define PCIE_MMIO_OFFSET        0xc0000000
@@ -125,6 +158,26 @@ static void bcm2838_peripherals_init(Object *obj)
         qdev_prop_set_bit(DEVICE(&s->ddc[i]), "auto-i2c", true);
         qdev_prop_set_string(DEVICE(&s->ddc[i]), "bus-name", name);
     }
+
+    object_initialize_child(obj, "hvs", &s->hvs, TYPE_BCM2838_HVS);
+    object_initialize_child(obj, "txp", &s->txp, TYPE_BCM2835_TXP);
+    for (int i = 0; i < BCM2838_NUM_PIXELVALVES; i++) {
+        g_autofree char *name = g_strdup_printf("pixelvalve%d", i);
+
+        object_initialize_child(obj, name, &s->pixelvalve[i],
+                                TYPE_BCM2838_PIXELVALVE);
+    }
+    object_initialize_child(obj, "pixelvalve_1_4_irq_orgate",
+                            &s->pixelvalve_1_4_irq_orgate, TYPE_OR_IRQ);
+    object_property_set_int(OBJECT(&s->pixelvalve_1_4_irq_orgate),
+                            "num-lines", 2, &error_abort);
+    for (int i = 0; i < BCM2838_NUM_HDMI; i++) {
+        g_autofree char *name = g_strdup_printf("hdmi%d", i);
+
+        object_initialize_child(obj, name, &s->hdmi[i], TYPE_BCM2838_HDMI);
+    }
+    object_initialize_child(obj, "hdmi-hd", &s->hdmi_hd, TYPE_BCM2838_HDMI_HD);
+    object_initialize_child(obj, "v3d", &s->v3d, TYPE_BCM2838_V3D);
 
     object_property_add_const_link(OBJECT(&s->gpio), "sdbus-sdhci",
                                    OBJECT(&s_base->sdhci.sdbus));
@@ -400,6 +453,60 @@ static void bcm2838_peripherals_realize(DeviceState *dev, Error **errp)
                                     sysbus_mmio_get_region(ddc, 0));
         memory_region_add_subregion(&s_base->peri_mr, aon_autoi2c_offset[i],
                                     sysbus_mmio_get_region(ddc, 1));
+    }
+
+    /*
+     * Display pipeline (HVS, TXP, pixel valves, HDMI) and V3D. They take
+     * the place of the unimplemented TXP and V3D regions of the common
+     * peripherals. The SoC connects the GIC interrupts (bcm2838.c).
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->hvs), errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(&s->txp), errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(&s->hdmi_hd), errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(&s->v3d), errp) ||
+        !qdev_realize(DEVICE(&s->pixelvalve_1_4_irq_orgate), NULL, errp)) {
+        return;
+    }
+    memory_region_add_subregion(&s_base->peri_mr, HVS_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->hvs), 0));
+    memory_region_add_subregion(&s_base->peri_mr, TXP_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->txp), 0));
+    memory_region_add_subregion(&s_base->peri_mr, HDMI_HD_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->hdmi_hd), 0));
+    memory_region_add_subregion(&s_base->peri_mr, V3D_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->v3d), 0));
+    memory_region_add_subregion(&s_base->peri_mr, V3D_CORE0_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->v3d), 1));
+    for (int i = 0; i < BCM2838_NUM_PIXELVALVES; i++) {
+        SysBusDevice *pv = SYS_BUS_DEVICE(&s->pixelvalve[i]);
+
+        if (!sysbus_realize(pv, errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s_base->peri_mr, pixelvalve_offset[i],
+                                    sysbus_mmio_get_region(pv, 0));
+    }
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->pixelvalve[1]), 0,
+                       qdev_get_gpio_in(DEVICE(&s->pixelvalve_1_4_irq_orgate),
+                                        0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->pixelvalve[4]), 0,
+                       qdev_get_gpio_in(DEVICE(&s->pixelvalve_1_4_irq_orgate),
+                                        1));
+    for (int i = 0; i < BCM2838_NUM_HDMI; i++) {
+        SysBusDevice *hdmi = SYS_BUS_DEVICE(&s->hdmi[i]);
+
+        if (!sysbus_realize(hdmi, errp)) {
+            return;
+        }
+        for (int r = 0; r < BCM2838_HDMI_NUM_REGIONS; r++) {
+            memory_region_add_subregion(&s_base->peri_mr, hdmi_offset[i][r],
+                                        sysbus_mmio_get_region(hdmi, r));
+        }
+        for (int irq = 0; irq < BCM2838_HDMI_NUM_IRQS; irq++) {
+            sysbus_connect_irq(hdmi, irq,
+                               qdev_get_gpio_in(DEVICE(&s->aon_intc),
+                                                hdmi_l2_irq[i][irq]));
+        }
     }
 
     /*

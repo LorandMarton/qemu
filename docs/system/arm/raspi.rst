@@ -48,12 +48,18 @@ Implemented devices
  * AXI bridge (ASB) controls of the power domains (raspi4b, raspicm4)
  * Always-on block: HDMI DVP, L2 interrupt controller, HDMI DDC I2C
    controllers (raspi4b, raspicm4)
+ * Display pipeline: HVS, pixel valves, transposer (TXP), HDMI with CEC
+   (raspi4b, raspicm4); see `Display and GPU`_
+ * V3D 4.2 GPU (raspi4b, raspicm4); see `Display and GPU`_
  * BCM4345/6 (CYW43455) wireless LAN on SDIO (raspicm4)
 
 Missing devices
 ---------------
 
  * Pulse Width Modulation (PWM)
+ * Display output: frame composition, video timing, writeback and HDMI
+   signalling (raspi4b, raspicm4)
+ * V3D job execution (raspi4b, raspicm4)
  * PCIe MSI/MSI-X interrupt delivery (raspi4b) -- INTx works; a PCIe
    device that only signals via MSI/MSI-X needs ``msi=off,msix=off``
 
@@ -208,6 +214,21 @@ Linux reports the time as invalid until the guest sets it. For example, on
 BSC0::
 
   -device pcf85063,bus=i2c-bus.0,power-lost=on
+
+Display and GPU
+---------------
+
+On ``raspi4b`` and ``raspicm4`` the BCM2711 display pipeline (HVS, pixel
+valves, transposer, HDMI) and the V3D GPU are register models: the Linux
+``vc4`` and ``v3d`` drivers bind and register their DRM devices, as on a
+board without a display. No display is connected: the HDMI hot-plug status
+reads disconnected. A display channel, video timing, a writeback or a V3D
+job that the guest starts never completes (``-d unimp`` logs it).
+
+A CEC transmission behaves as on a bus with no other device: a directed
+message is not acknowledged, a broadcast message is sent. An EDID for the
+DDC bus can be added with ``-device i2c-ddc,bus=ddc0,address=0x50`` (DDC1:
+``bus=ddc1``).
 
 Wireless LAN
 ------------

@@ -212,6 +212,25 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps->aon_intc), 0,
                        qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_AON_L2));
 
+    /* Display pipeline and V3D */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps->hvs), 0,
+                       qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_HVS));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps->txp), 0,
+                       qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_TXP));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps->pixelvalve[0]), 0,
+                       qdev_get_gpio_in(gicdev,
+                                        GIC_SPI_INTERRUPT_PIXELVALVE_0));
+    qdev_connect_gpio_out(DEVICE(&ps->pixelvalve_1_4_irq_orgate), 0,
+                          qdev_get_gpio_in(gicdev,
+                                           GIC_SPI_INTERRUPT_PIXELVALVE_1_4));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps->pixelvalve[2]), 0,
+                       qdev_get_gpio_in(gicdev,
+                                        GIC_SPI_INTERRUPT_PIXELVALVE_2));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps->pixelvalve[3]), 0,
+                       qdev_get_gpio_in(gicdev,
+                                        GIC_SPI_INTERRUPT_PIXELVALVE_3));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps->v3d), 0,
+                       qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_V3D));
 
     /* Connect AUX / UART1 to the interrupt controller */
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->aux), 0,

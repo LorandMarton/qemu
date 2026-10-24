@@ -16,6 +16,11 @@
 #include "hw/misc/bcm2838_dvp.h"
 #include "hw/intc/bcm2838_l2_intc.h"
 #include "hw/i2c/brcmstb_i2c.h"
+#include "hw/display/bcm2835_txp.h"
+#include "hw/display/bcm2838_hdmi.h"
+#include "hw/display/bcm2838_hvs.h"
+#include "hw/display/bcm2838_pixelvalve.h"
+#include "hw/display/bcm2838_v3d.h"
 #include "hw/arm/bcm2838_pcie.h"
 #include "hw/net/bcm2838_genet.h"
 #include "hw/sd/sdhci.h"
@@ -26,7 +31,14 @@
 #define GIC_SPI_INTERRUPT_MPHI         40
 #define GIC_SPI_INTERRUPT_GPIO_0       113 /* banks 0, 1, 2, any: 113-116 */
 #define GIC_SPI_INTERRUPT_DWC2         73
+#define GIC_SPI_INTERRUPT_V3D          74
+#define GIC_SPI_INTERRUPT_TXP          75
 #define GIC_SPI_INTERRUPT_AON_L2       96
+#define GIC_SPI_INTERRUPT_HVS          97
+#define GIC_SPI_INTERRUPT_PIXELVALVE_2 101
+#define GIC_SPI_INTERRUPT_PIXELVALVE_3 106
+#define GIC_SPI_INTERRUPT_PIXELVALVE_0 109
+#define GIC_SPI_INTERRUPT_PIXELVALVE_1_4 110 /* shared */
 #define GIC_SPI_INTERRUPT_DMA_0        80
 #define GIC_SPI_INTERRUPT_DMA_6        86
 #define GIC_SPI_INTERRUPT_DMA_7_8      87
@@ -73,6 +85,7 @@
 #define BCM2838_SPI_STRIDE      0x200
 #define BCM2838_NUM_EXTRA_SPIS  4
 #define BCM2838_NUM_HDMI 2
+#define BCM2838_NUM_PIXELVALVES 5
 /* BCM2711 built-in xHCI (used with otg_mode=1, as on the CM4 IO board) */
 #define BCM2838_XHCI_OFFSET     0x9c0000
 #define BCM2838_XHCI_SIZE       0x100000
@@ -118,6 +131,14 @@ struct BCM2838PeripheralState {
     BCM2838L2IntcState aon_intc;
     BrcmstbI2CState ddc[BCM2838_NUM_HDMI];
 
+    /* Display pipeline and GPU */
+    BCM2838HvsState hvs;
+    BCM2835TxpState txp;
+    BCM2838PixelValveState pixelvalve[BCM2838_NUM_PIXELVALVES];
+    OrIRQState pixelvalve_1_4_irq_orgate;
+    BCM2838HdmiState hdmi[BCM2838_NUM_HDMI];
+    BCM2838HdmiHdState hdmi_hd;
+    BCM2838V3dState v3d;
 };
 
 struct BCM2838PeripheralClass {

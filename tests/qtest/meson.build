@@ -286,7 +286,7 @@ qtests_aarch64 = \
   (config_all_devices.has_key('CONFIG_RASPI') ? ['bcm2835-dma-test', 'bcm2835-i2c-test', 'bcm2835-ic-test',
                                                     'bcm2835-property-test',
                                                     'bcm2838-aon-test', 'bcm2838-cprman-test',
-                                                    'bcm2838-gpio-test',
+                                                    'bcm2838-display-test', 'bcm2838-gpio-test',
                                                     'bcm2838-spi-test',
                                                     'bcm2838-usb-test'] : []) +  \
   (config_all_devices.has_key('CONFIG_BCM4345') ? ['bcm4345-test'] : []) + \

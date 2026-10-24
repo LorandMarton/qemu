@@ -27,7 +27,14 @@ system_ss.add(when: 'CONFIG_BOCHS_DISPLAY', if_true: files('bochs-display.c'))
 system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_fimd.c'))
 system_ss.add(when: 'CONFIG_FRAMEBUFFER', if_true: files('framebuffer.c'))
 
-system_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2835_fb.c'))
+system_ss.add(when: 'CONFIG_RASPI', if_true: files(
+  'bcm2835_fb.c',
+  'bcm2835_txp.c',
+  'bcm2838_hdmi.c',
+  'bcm2838_hvs.c',
+  'bcm2838_pixelvalve.c',
+  'bcm2838_v3d.c',
+))
 system_ss.add(when: 'CONFIG_SM501', if_true: files('sm501.c'))
 system_ss.add(when: 'CONFIG_TCX', if_true: files('tcx.c'))
 system_ss.add(when: 'CONFIG_CG3', if_true: files('cg3.c'))

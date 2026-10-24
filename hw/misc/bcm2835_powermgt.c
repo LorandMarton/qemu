@@ -27,6 +27,31 @@
 #define V_WDOG_TIME_MASK 0xfffff
 #define WDOG_TICKS_PER_SECOND 65536
 
+/*
+ * Power domains: the switches close and the memories are repaired at
+ * once, so POWOK follows POWUP and MRDONE follows MEMREP.
+ */
+#define R_IMAGE 0x108
+#define R_PROC 0x110
+#define V_DOMAIN_POWUP BIT(0)
+#define V_DOMAIN_POWOK BIT(1)
+#define V_DOMAIN_MEMREP BIT(3)
+#define V_DOMAIN_MRDONE BIT(4)
+#define V_DOMAIN_MASK 0xffffff
+
+static uint32_t bcm2835_powermgt_domain(BCM2835PowerMgtState *s, int i)
+{
+    uint32_t v = s->domain[i];
+
+    if (v & V_DOMAIN_POWUP) {
+        v |= V_DOMAIN_POWOK;
+        if (v & V_DOMAIN_MEMREP) {
+            v |= V_DOMAIN_MRDONE;
+        }
+    }
+    return v;
+}
+
 static void bcm2835_powermgt_expire(void *opaque)
 {
     BCM2835PowerMgtState *s = opaque;
@@ -70,6 +95,9 @@ static uint64_t bcm2835_powermgt_read(void *opaque, hwaddr offset,
     case R_WDOG:
         res = s->wdog;
         break;
+    case R_IMAGE ... R_PROC:
+        res = bcm2835_powermgt_domain(s, (offset - R_IMAGE) >> 2);
+        break;
 
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -111,6 +139,11 @@ static void bcm2835_powermgt_write(void *opaque, hwaddr offset,
         s->wdog = value & V_WDOG_TIME_MASK;
         bcm2835_powermgt_update_wdog(s);
         break;
+    case R_IMAGE ... R_PROC:
+        s->domain[(offset - R_IMAGE) >> 2] = value & V_DOMAIN_MASK &
+                                             ~(V_DOMAIN_POWOK |
+                                               V_DOMAIN_MRDONE);
+        break;
 
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -130,13 +163,14 @@ static const MemoryRegionOps bcm2835_powermgt_ops = {
 
 static const VMStateDescription vmstate_bcm2835_powermgt = {
     .name = TYPE_BCM2835_POWERMGT,
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(rstc, BCM2835PowerMgtState),
         VMSTATE_UINT32(rsts, BCM2835PowerMgtState),
         VMSTATE_UINT32(wdog, BCM2835PowerMgtState),
         VMSTATE_TIMER_PTR(wdog_timer, BCM2835PowerMgtState),
+        VMSTATE_UINT32_ARRAY_V(domain, BCM2835PowerMgtState, 3, 3),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -167,6 +201,7 @@ static void bcm2835_powermgt_reset(DeviceState *dev)
     s->rstc = 0x00000102;
     s->rsts = 0x00001000;
     s->wdog = 0x00000000;
+    memset(s->domain, 0, sizeof(s->domain));
     timer_del(s->wdog_timer);
 }
 
