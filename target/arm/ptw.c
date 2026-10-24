@@ -2441,6 +2441,9 @@ static bool get_phys_addr_lpae(CPUARMState *env, S1Translate *ptw,
         if (aarch64 && cpu_isar_feature(aa64_bti, cpu)) {
             result->f.extra.arm.guarded = extract64(attrs, 50, 1); /* GP */
         }
+        /* nG, in the regimes with ASIDs (RES0 in the others) */
+        result->f.not_global = regime_has_2_ranges(mmu_idx) &&
+                               extract64(attrs, 11, 1);
         device = S1_attrs_are_device(result->cacheattrs.attrs);
     }
 
@@ -3717,7 +3720,7 @@ static bool get_phys_addr_twostage(CPUARMState *env, S1Translate *ptw,
     hwaddr ipa;
     int s1_prot, s1_lgpgsz;
     ARMSecuritySpace in_space = ptw->in_space;
-    bool ret, ipa_secure, s1_guarded;
+    bool ret, ipa_secure, s1_guarded, s1_not_global;
     ARMCacheAttrs cacheattrs1;
     ARMSecuritySpace ipa_space;
     uint64_t hcr;
@@ -3746,6 +3749,7 @@ static bool get_phys_addr_twostage(CPUARMState *env, S1Translate *ptw,
     s1_prot = result->f.prot;
     s1_lgpgsz = result->f.lg_page_size;
     s1_guarded = result->f.extra.arm.guarded;
+    s1_not_global = result->f.not_global;
     cacheattrs1 = result->cacheattrs;
     memset(result, 0, sizeof(*result));
 
@@ -3799,6 +3803,8 @@ static bool get_phys_addr_twostage(CPUARMState *env, S1Translate *ptw,
 
     /* No BTI GP information in stage 2, we just use the S1 value */
     result->f.extra.arm.guarded = s1_guarded;
+    /* Likewise for nG */
+    result->f.not_global = s1_not_global;
 
     /*
      * Check if IPA translates to secure or non-secure PA space.

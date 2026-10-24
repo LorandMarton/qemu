@@ -322,6 +322,7 @@ static void tlb_mmu_resize_locked(CPUTLBDesc *desc, CPUTLBDescFast *fast,
 static void tlb_mmu_flush_locked(CPUTLBDesc *desc, CPUTLBDescFast *fast)
 {
     desc->n_used_entries = 0;
+    desc->has_global = false;
     desc->large_page_addr = -1;
     desc->large_page_mask = -1;
     desc->vindex = 0;
@@ -1171,17 +1172,29 @@ static bool tlb_flush_range_desc_locked(CPUTLBDesc *d, CPUTLBDescFast *f,
 }
 
 /*
+ * Whether a flush of the entries of address space @asid (in the bits of
+ * @mask; 0, 0 for all address spaces) applies to the TLB @d.
+ */
+static inline bool tlb_flush_asid_applies(CPUTLBDesc *d, uint32_t asid,
+                                          uint32_t mask)
+{
+    return d->has_global || tlb_asid_match(d->asid, asid, mask);
+}
+
+/*
  * Return true if the whole current TLB was flushed, as
  * tlb_flush_page_locked().
  */
 static bool tlb_flush_range_locked(CPUState *cpu, int midx,
-                                   vaddr addr, vaddr len, unsigned bits)
+                                   vaddr addr, vaddr len, unsigned bits,
+                                   uint32_t asid, uint32_t mask)
 {
     CPUTLBDesc *d = &cpu->neg.tlb.d[midx];
     CPUTLBSaved *saved = cpu->neg.tlb.c.saved[midx];
     bool full = false;
 
-    if (!tlb_flush_range_desc_locked(d, cpu_tlb_fast(cpu, midx),
+    if (tlb_flush_asid_applies(d, asid, mask) &&
+        !tlb_flush_range_desc_locked(d, cpu_tlb_fast(cpu, midx),
                                      addr, len, bits)) {
         tlb_debug("forcing full flush midx %d ("
                   "%016" VADDR_PRIx "+%016" VADDR_PRIx "/%u)\n",
@@ -1191,6 +1204,7 @@ static bool tlb_flush_range_locked(CPUState *cpu, int midx,
     }
     for (int i = 0; saved && i < CPU_TLB_SAVED_ASIDS; i++) {
         if (saved[i].stamp &&
+            tlb_flush_asid_applies(&saved[i].d, asid, mask) &&
             !tlb_flush_range_desc_locked(&saved[i].d, &saved[i].f,
                                          addr, len, bits)) {
             saved[i].stamp = 0;
@@ -1205,6 +1219,9 @@ typedef struct {
     vaddr len;
     MMUIdxMap idxmap;
     unsigned bits;
+    /* The address space of the entries to flush; 0, 0 for all */
+    uint32_t asid;
+    uint32_t asid_mask;
 } TLBFlushRangeData;
 
 static void tlb_flush_range_by_mmuidx_async_0(CPUState *cpu,
@@ -1222,7 +1239,7 @@ static void tlb_flush_range_by_mmuidx_async_0(CPUState *cpu,
     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
         if ((d.idxmap >> mmu_idx) & 1) {
             full |= tlb_flush_range_locked(cpu, mmu_idx, d.addr, d.len,
-                                           d.bits);
+                                           d.bits, d.asid, d.asid_mask);
         }
     }
     if (full && tlb_jmp_cache_retag_locked(cpu)) {
@@ -1285,6 +1302,8 @@ void tlb_flush_range_by_mmuidx(CPUState *cpu, vaddr addr,
     d.len = len;
     d.idxmap = idxmap;
     d.bits = bits;
+    d.asid = 0;
+    d.asid_mask = 0;
 
     tlb_flush_range_by_mmuidx_async_0(cpu, d);
 }
@@ -1324,6 +1343,8 @@ void tlb_flush_range_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
     d.len = len;
     d.idxmap = idxmap;
     d.bits = bits;
+    d.asid = 0;
+    d.asid_mask = 0;
 
     /* Allocate a separate data block for each destination cpu.  */
     CPU_FOREACH(dst_cpu) {
@@ -1351,6 +1372,67 @@ void tlb_flush_page_bits_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
 {
     tlb_flush_range_by_mmuidx_all_cpus_synced(src_cpu, addr, TARGET_PAGE_SIZE,
                                               idxmap, bits);
+}
+
+static void tlb_flush_page_bits_asid_data(TLBFlushRangeData *d, vaddr addr,
+                                          MMUIdxMap idxmap, unsigned bits,
+                                          uint32_t asid, uint32_t mask)
+{
+    d->addr = addr & TARGET_PAGE_MASK;
+    d->len = TARGET_PAGE_SIZE;
+    d->idxmap = idxmap;
+    d->bits = MIN(bits, target_long_bits());
+    d->asid = asid & mask;
+    d->asid_mask = mask;
+}
+
+void tlb_flush_page_bits_asid_by_mmuidx(CPUState *cpu, vaddr addr,
+                                        MMUIdxMap idxmap, unsigned bits,
+                                        uint32_t asid, uint32_t mask)
+{
+    TLBFlushRangeData d;
+
+    assert_cpu_is_self(cpu);
+
+    /* Global entries may be anywhere: as tlb_flush_range_by_mmuidx() */
+    if (bits < TARGET_PAGE_BITS) {
+        tlb_flush_by_mmuidx(cpu, idxmap);
+        return;
+    }
+    tlb_flush_page_bits_asid_data(&d, addr, idxmap, bits, asid, mask);
+    tlb_flush_range_by_mmuidx_async_0(cpu, d);
+}
+
+void tlb_flush_page_bits_asid_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+                                                        vaddr addr,
+                                                        MMUIdxMap idxmap,
+                                                        unsigned bits,
+                                                        uint32_t asid,
+                                                        uint32_t mask)
+{
+    TLBFlushRangeData d;
+    CPUState *dst_cpu;
+    bool queued = false;
+
+    if (bits < TARGET_PAGE_BITS) {
+        tlb_flush_by_mmuidx_all_cpus_synced(src_cpu, idxmap);
+        return;
+    }
+    tlb_flush_page_bits_asid_data(&d, addr, idxmap, bits, asid, mask);
+
+    CPU_FOREACH(dst_cpu) {
+        if (dst_cpu != src_cpu && !tlb_defer_flush(dst_cpu, idxmap)) {
+            async_run_on_cpu(dst_cpu, tlb_flush_range_by_mmuidx_async_1,
+                             RUN_ON_CPU_HOST_PTR(g_memdup2(&d, sizeof(d))));
+            queued = true;
+        }
+    }
+    if (tlb_flush_in_place(src_cpu, queued)) {
+        tlb_flush_range_by_mmuidx_async_0(src_cpu, d);
+        return;
+    }
+    async_safe_run_on_cpu(src_cpu, tlb_flush_range_by_mmuidx_async_1,
+                          RUN_ON_CPU_HOST_PTR(g_memdup2(&d, sizeof(d))));
 }
 
 /* update the TLBs so that writes to code in the virtual page 'addr'
@@ -1642,6 +1724,7 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
 
     /* Note that the tlb is no longer clean.  */
     tlb->c.dirty |= 1 << mmu_idx;
+    desc->has_global |= !full->not_global;
 
     /* Make sure there's no cached translation for the new page.  */
     tlb_flush_vtlb_page_locked(desc, addr_page);

@@ -253,6 +253,13 @@ struct CPUTLBEntryFull {
     uint8_t tlb_fill_flags;
 
     /*
+     * @not_global: the translation is only valid in the address space it
+     * was made in (Arm nG), so a flush by address space identifier may
+     * skip the TLBs of other address spaces.
+     */
+    bool not_global;
+
+    /*
      * Additional tlb flags for use by the slow path. If non-zero,
      * the corresponding CPUTLBEntry comparator must have TLB_FORCE_SLOW.
      */
@@ -309,6 +316,8 @@ typedef struct CPUTLBDesc {
      * tlb_set_asid_by_mmuidx(); a value above UINT32_MAX if unknown.
      */
     uint64_t asid;
+    /* Whether an entry without @not_global was added since the flush */
+    bool has_global;
 } CPUTLBDesc;
 
 /*

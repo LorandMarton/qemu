@@ -246,6 +246,31 @@ void tlb_flush_page_bits_by_mmuidx_all_cpus_synced(CPUState *cpu, vaddr addr,
                                                    unsigned bits);
 
 /**
+ * tlb_flush_page_bits_asid_by_mmuidx
+ * @cpu: CPU whose TLB should be flushed
+ * @addr: virtual address of page to be flushed
+ * @idxmap: bitmap of mmu indexes to flush
+ * @bits: number of significant bits in address
+ * @asid: address space identifier of the entries to flush
+ * @mask: the bits of the identifier that are compared
+ *
+ * As tlb_flush_page_bits_by_mmuidx(), for the entries of the address
+ * spaces matching @asid as in tlb_flush_asid_by_mmuidx(), and the entries
+ * filled without CPUTLBEntryFull.not_global in any address space.
+ */
+void tlb_flush_page_bits_asid_by_mmuidx(CPUState *cpu, vaddr addr,
+                                        MMUIdxMap idxmap, unsigned bits,
+                                        uint32_t asid, uint32_t mask);
+
+/* Similarly, with broadcast and syncing. */
+void tlb_flush_page_bits_asid_by_mmuidx_all_cpus_synced(CPUState *cpu,
+                                                        vaddr addr,
+                                                        MMUIdxMap idxmap,
+                                                        unsigned bits,
+                                                        uint32_t asid,
+                                                        uint32_t mask);
+
+/**
  * tlb_flush_range_by_mmuidx
  * @cpu: CPU whose TLB should be flushed
  * @addr: virtual address of the start of the range to be flushed
@@ -318,6 +343,20 @@ static inline void tlb_flush_page_bits_by_mmuidx(CPUState *cpu,
 static inline void
 tlb_flush_page_bits_by_mmuidx_all_cpus_synced(CPUState *cpu, vaddr addr,
                                               MMUIdxMap idxmap, unsigned bits)
+{
+}
+static inline void
+tlb_flush_page_bits_asid_by_mmuidx(CPUState *cpu, vaddr addr,
+                                   MMUIdxMap idxmap, unsigned bits,
+                                   uint32_t asid, uint32_t mask)
+{
+}
+static inline void
+tlb_flush_page_bits_asid_by_mmuidx_all_cpus_synced(CPUState *cpu, vaddr addr,
+                                                   MMUIdxMap idxmap,
+                                                   unsigned bits,
+                                                   uint32_t asid,
+                                                   uint32_t mask)
 {
 }
 static inline void tlb_flush_range_by_mmuidx(CPUState *cpu, vaddr addr,

@@ -10,6 +10,8 @@
  * invalidation by VA and ASID must also reach the global entries of that
  * VA, whichever address space they were cached in, and an invalidation of
  * any page of a block must reach all of the block, the code in it included.
+ * The RAM map of the test itself is non-global too, so that a TLB holds
+ * global entries only where a test caches them.
  *
  * Two configurations: the ASID in TTBR0_EL1 with 8-bit ASIDs (TCR_EL1.A1 0,
  * AS 0, so ASIDs that differ in bits [15:8] only are the same), and the
@@ -47,6 +49,7 @@
 #define DESC_SH_INNER   (3ull << 8)
 #define DESC_NG         (1ull << 11)
 #define DESC_UXN        (1ull << 54)
+#define ADDR_MASK       0x0000fffffffff000ull
 
 #define TCR_A1          (1ull << 22)
 #define TCR_EPD1        (1ull << 23)
@@ -59,6 +62,7 @@ typedef struct {
 } Tables;
 
 static Tables tables[N_AS] __attribute__((aligned(PAGE)));
+static uint64_t ram_l2[512] __attribute__((aligned(PAGE)));
 static uint32_t data[N_AS + N_ALT][PAGE / 4] __attribute__((aligned(PAGE)));
 static uint32_t code[N_AS + N_ALT][PAGE / 4] __attribute__((aligned(PAGE)));
 static uint32_t gdata[2][PAGE / 4] __attribute__((aligned(PAGE)));
@@ -156,6 +160,7 @@ static void check(int as, uint32_t want, const char *what)
 static void setup(void)
 {
     uint64_t *boot_l1;
+    int ram_l1_index = -1;
 
     asm volatile("mrs %0, ttbr0_el1" : "=r"(boot_l1));
     boot_l1 = (uint64_t *)((uintptr_t)boot_l1 & ~(PAGE - 1ull));
@@ -168,13 +173,24 @@ static void setup(void)
         gdata[i][0] = 100 + i;
         write_code(gcode[i], 100 + i);
     }
+    /* The RAM identity map of boot.S (blocks in one table), non-global */
+    for (int i = 0; i < 512; i++) {
+        if ((boot_l1[i] & 3) == DESC_TABLE) {
+            uint64_t *l2 = (uint64_t *)(uintptr_t)(boot_l1[i] & ADDR_MASK);
+
+            for (int j = 0; j < 512; j++) {
+                ram_l2[j] = l2[j] & 1 ? l2[j] | DESC_NG : l2[j];
+            }
+            ram_l1_index = i;
+        }
+    }
     for (int as = 0; as < N_AS; as++) {
         Tables *t = &tables[as];
 
-        /* The RAM identity map of boot.S, with global entries. */
         for (int i = 0; i < 512; i++) {
             t->l1[i] = boot_l1[i];
         }
+        t->l1[ram_l1_index] = (uintptr_t)ram_l2 | DESC_TABLE;
         t->l1[TEST_VA >> 30] = (uintptr_t)t->l2 | DESC_TABLE;
         t->l2[0] = (uintptr_t)t->l3 | DESC_TABLE;
         t->l3[0] = page_desc(data[as]);
@@ -188,6 +204,8 @@ static void setup(void)
     }
     asm volatile("dsb ishst" : : : "memory");
     switch_to(0);
+    /* No global entries of the boot map from here on */
+    asm volatile("tlbi vmalle1\n\tdsb nsh\n\tisb" : : : "memory");
     for (int i = 0; i < 2; i++) {
         write_code((uint32_t *)(BLOCK_VA + (1 + i) * BLOCK + BLOCK_CODE),
                    200 + i);
