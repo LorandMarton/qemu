@@ -173,6 +173,11 @@ static void raspicm4_machine_init(MachineState *machine)
     raspi_base_machine_init(machine, &soc->parent_obj);
 }
 
+/* No monitor on the module: the firmware reports no display */
+static GlobalProperty raspicm4_compat_defaults[] = {
+    { TYPE_BCM2835_PROPERTY, "num-displays", "0" },
+};
+
 static void raspicm4_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -182,6 +187,8 @@ static void raspicm4_machine_class_init(ObjectClass *oc, const void *data)
     raspi_machine_class_common_init(mc, rmc->board_rev);
     mc->auto_create_sdcard = true;
     mc->init = raspicm4_machine_init;
+    compat_props_add(mc->compat_props, raspicm4_compat_defaults,
+                     G_N_ELEMENTS(raspicm4_compat_defaults));
 }
 
 static void raspi4b_machine_class_init(ObjectClass *oc, const void *data)

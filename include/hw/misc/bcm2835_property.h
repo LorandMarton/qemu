@@ -31,6 +31,7 @@ struct BCM2835PropertyState {
 
     MACAddr macaddr;
     uint32_t board_rev;
+    uint32_t num_displays; /* 0 or 1: the framebuffer, on HDMI0 */
     uint64_t board_serial;
     /* VideoCore firmware build: time (Unix), variant, version (git hash) */
     uint32_t fw_revision;

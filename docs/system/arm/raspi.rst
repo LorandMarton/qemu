@@ -72,3 +72,9 @@ When the firmware configuration (the file the ``vc-config`` property of
 ``bcm2835-property`` names, as ``vcgencmd get_config`` reads it) has
 ``enable_uart=1``, the core clock stays at its rate when the guest asks for
 another one: the firmware keeps the mini UART's baud rate.
+
+The firmware reports the framebuffer as a display on HDMI0 (the
+``num-displays`` property of ``bcm2835-property``, 1 by default). On
+``raspicm4`` it is 0, as on a Compute Module 4 without a monitor: Linux's
+``bcm2708_fb`` then disables itself and ``snd_bcm2835`` adds no HDMI sound
+card. ``-global bcm2835-property.num-displays=1`` gives it the framebuffer.

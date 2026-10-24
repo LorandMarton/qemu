@@ -23,6 +23,9 @@
 #define TAG_FW_REVISION     0x00000001
 #define TAG_FW_VARIANT      0x00000002
 #define TAG_FW_HASH         0x00000003
+#define TAG_GET_NUM_DISPLAYS 0x00040013
+#define TAG_GET_DISPLAY_ID  0x00040016
+#define DISPLAY_ID_HDMI0    2
 #define TAG_SET_CLOCK_RATE  0x00038002
 #define CLK_ARM             3
 #define CLK_CORE            4
@@ -200,12 +203,46 @@ static void test_power_domains(void)
     qtest_quit(qts);
 }
 
+/* The display ID of display @n */
+static uint32_t display_id(QTestState *qts, uint32_t n)
+{
+    qtest_writel(qts, BUF_ADDR + 20, n);
+    g_assert_cmpuint(property(qts, TAG_GET_DISPLAY_ID, 4), ==, 4);
+    return qtest_readl(qts, BUF_ADDR + 20);
+}
+
+static void test_displays(void)
+{
+    /* raspi4b: the framebuffer, on HDMI0 */
+    QTestState *qts = qtest_init("-M raspi4b");
+
+    g_assert_cmpuint(property(qts, TAG_GET_NUM_DISPLAYS, 4), ==, 4);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 20), ==, 1);
+    g_assert_cmpuint(display_id(qts, 0), ==, DISPLAY_ID_HDMI0);
+    g_assert_cmpuint(display_id(qts, 1), ==, 0);
+    qtest_quit(qts);
+
+    /* raspicm4: none, as a CM4 reports with no monitor */
+    qts = qtest_init("-M raspicm4");
+    g_assert_cmpuint(property(qts, TAG_GET_NUM_DISPLAYS, 4), ==, 4);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 20), ==, 0);
+    g_assert_cmpuint(display_id(qts, 0), ==, 0);
+    qtest_quit(qts);
+
+    /* a user setting wins over the machine's */
+    qts = qtest_init("-M raspicm4 -global bcm2835-property.num-displays=1");
+    g_assert_cmpuint(property(qts, TAG_GET_NUM_DISPLAYS, 4), ==, 4);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 20), ==, 1);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("/bcm2835-property/firmware/default", test_default);
     qtest_add_func("/bcm2835-property/firmware/build", test_build);
+    qtest_add_func("/bcm2835-property/displays", test_displays);
     qtest_add_func("/bcm2835-property/core-clock", test_core_clock);
     qtest_add_func("/bcm2835-property/gpio-expander", test_gpio_expander);
     qtest_add_func("/bcm2835-property/power-domains", test_power_domains);
