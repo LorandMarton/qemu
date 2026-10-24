@@ -21,6 +21,7 @@
 #include "hw/arm/boot.h"
 #include "qom/object.h"
 #include "hw/arm/bcm2838.h"
+#include "qemu/guest-random.h"
 #include <libfdt.h>
 
 #define TYPE_RASPI4B_MACHINE MACHINE_TYPE_NAME("raspi4b")
@@ -68,6 +69,72 @@ static void raspi4_modify_dtb(const struct arm_boot_info *info, void *fdt)
     }
 }
 
+/*
+ * Memory as the BCM2711 firmware describes it: one node, ARM low memory
+ * below the VideoCore carve-out, the rest of the first 4 GiB up to the
+ * peripherals, and everything above 4 GiB in 2 GiB ranges (#size-cells is 1).
+ */
+static void raspi4_fw_modify_dtb(const struct arm_boot_info *info, void *fdt)
+{
+    uint64_t ram_size = board_ram_size(info->board_id);
+    uint64_t ranges[8][2];
+    uint32_t acells, scells;
+    g_autofree uint32_t *cells = NULL;
+    int n = 0, c = 0;
+
+    acells = qemu_fdt_getprop_cell(fdt, "/", "#address-cells",
+                                   NULL, &error_fatal);
+    scells = qemu_fdt_getprop_cell(fdt, "/", "#size-cells",
+                                   NULL, &error_fatal);
+
+    ranges[n][0] = 0;
+    ranges[n++][1] = info->ram_size;
+    ranges[n][0] = UPPER_RAM_BASE;
+    ranges[n++][1] = MIN(ram_size, BCM2838_PERI_LOW_BASE) - UPPER_RAM_BASE;
+    for (uint64_t base = 4 * GiB; base < ram_size && n < ARRAY_SIZE(ranges);
+         base += 2 * GiB) {
+        ranges[n][0] = base;
+        ranges[n++][1] = MIN(ram_size - base, 2 * GiB);
+    }
+
+    cells = g_new0(uint32_t, n * (acells + scells));
+    for (int i = 0; i < n; i++) {
+        if (acells == 2) {
+            cells[c++] = cpu_to_be32(ranges[i][0] >> 32);
+        }
+        cells[c++] = cpu_to_be32(ranges[i][0]);
+        if (scells == 2) {
+            cells[c++] = cpu_to_be32(ranges[i][1] >> 32);
+        }
+        cells[c++] = cpu_to_be32(ranges[i][1]);
+    }
+    qemu_fdt_setprop(fdt, "/memory@0", "reg", cells, c * sizeof(uint32_t));
+
+    /*
+     * The firmware seeds KASLR and the CRNG ("KASLR enabled",
+     * "crng init done" at 0 s); Linux zeroes kaslr-seed and removes
+     * rng-seed after use. rng-seed is refreshed on each reset.
+     */
+    {
+        struct {
+            uint64_t kaslr;
+            uint8_t rng[32];
+        } seed;
+
+        if (!qemu_guest_getrandom(&seed, sizeof(seed), NULL)) {
+            qemu_fdt_setprop_u64(fdt, "/chosen", "kaslr-seed", seed.kaslr);
+            qemu_fdt_setprop(fdt, "/chosen", "rng-seed", seed.rng,
+                             sizeof(seed.rng));
+        }
+    }
+
+    /*
+     * The firmware passes the tree without free space; Linux keeps
+     * totalsize bytes of it reserved.
+     */
+    fdt_pack(fdt);
+}
+
 static void raspi4b_machine_init(MachineState *machine)
 {
     Raspi4bMachineState *s = RASPI4B_MACHINE(machine);
@@ -95,6 +162,7 @@ static void raspicm4_machine_init(MachineState *machine)
     RaspiBaseMachineClass *mc = RASPI_BASE_MACHINE_GET_CLASS(machine);
     BCM2838State *soc = &s->soc;
 
+    s_base->binfo.modify_dtb = raspi4_fw_modify_dtb;
     s_base->binfo.dtb_below_initrd = true;
     s_base->binfo.board_id = mc->board_rev;
 
