@@ -12,8 +12,8 @@
 #include "hw/arm/raspi_platform.h"
 #include "hw/arm/bcm2838_peripherals.h"
 
-#define CLOCK_ISP_OFFSET        0xc11000
-#define CLOCK_ISP_SIZE          0x100
+#define RPIVID_ASB_OFFSET       0xc11000
+
 
 #define PCIE_RC_OFFSET          0x1500000
 #define PCIE_MMIO_OFFSET        0xc0000000
@@ -58,6 +58,11 @@ static void bcm2838_peripherals_init(Object *obj)
 
     /* GPIO */
     object_initialize_child(obj, "gpio", &s->gpio, TYPE_BCM2838_GPIO);
+
+    /* AXI bridges of the PM power domains */
+    object_initialize_child(obj, "asb", &s->asb, TYPE_BCM2838_ASB);
+    object_initialize_child(obj, "rpivid-asb", &s->rpivid_asb,
+                            TYPE_BCM2838_ASB);
 
     object_property_add_const_link(OBJECT(&s->gpio), "sdbus-sdhci",
                                    OBJECT(&s_base->sdhci.sdbus));
@@ -224,9 +229,6 @@ static void bcm2838_peripherals_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(&s_base->peri_mr, BCM2838_MPHI_OFFSET,
                                 &s->mphi_mr_alias);
 
-    create_unimp(s_base, &s->clkisp, "bcm2835-clkisp", CLOCK_ISP_OFFSET,
-                 CLOCK_ISP_SIZE);
-
     /* PCIe Root Complex */
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->pcie_host), errp)) {
         return;
@@ -268,8 +270,16 @@ static void bcm2838_peripherals_realize(DeviceState *dev, Error **errp)
 
     object_property_add_alias(OBJECT(s), "sd-bus", OBJECT(&s->gpio), "sd-bus");
 
-    /* BCM2838 RPiVid ASB must be mapped to prevent kernel crash */
-    create_unimp(s_base, &s->asb, "bcm2838-asb", BRDG_OFFSET, 0x24);
+    /* ASB (Linux bcm2835-power checks the bridge IDs) */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->asb), errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(&s->rpivid_asb), errp)) {
+        return;
+    }
+    memory_region_add_subregion(&s_base->peri_mr, BRDG_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->asb), 0));
+    memory_region_add_subregion(&s_base->peri_mr, RPIVID_ASB_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->rpivid_asb), 0));
+
 }
 
 static void bcm2838_peripherals_class_init(ObjectClass *oc, const void *data)

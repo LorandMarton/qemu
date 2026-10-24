@@ -12,6 +12,7 @@
 #include "hw/arm/bcm2835_peripherals.h"
 #include "hw/misc/bcm2838_rng200.h"
 #include "hw/misc/bcm2838_thermal.h"
+#include "hw/misc/bcm2838_asb.h"
 #include "hw/arm/bcm2838_pcie.h"
 #include "hw/net/bcm2838_genet.h"
 #include "hw/sd/sdhci.h"
@@ -82,8 +83,9 @@ struct BCM2838PeripheralState {
     OrIRQState dma_7_8_irq_orgate;
     OrIRQState dma_9_10_irq_orgate;
 
-    UnimplementedDeviceState asb;
-    UnimplementedDeviceState clkisp;
+    BCM2838AsbState asb;
+    BCM2838AsbState rpivid_asb;
+
 };
 
 struct BCM2838PeripheralClass {

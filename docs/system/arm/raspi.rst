@@ -41,6 +41,7 @@ Implemented devices
  * Broadcom Serial Controller (I2C)
  * PCIe Root Complex (raspi4b, raspicm4)
  * GENET Ethernet Controller (raspi4b, raspicm4)
+ * AXI bridge (ASB) controls of the power domains (raspi4b, raspicm4)
 
 Missing devices
 ---------------
