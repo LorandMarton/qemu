@@ -1390,15 +1390,15 @@ void tlb_unprotect_code(ram_addr_t ram_addr)
 static void tlb_reset_dirty_range_locked(CPUTLBEntryFull *full, CPUTLBEntry *ent,
                                          uintptr_t start, uintptr_t length)
 {
+    const int mask = TLB_INVALID_MASK | TLB_MMIO | TLB_DISCARD_WRITE |
+                     TLB_NOTDIRTY;
     const uintptr_t addr = ent->addr_write;
-    int flags = addr | full->slow_flags[MMU_DATA_STORE];
+    uintptr_t host = (addr & TARGET_PAGE_MASK) + ent->addend;
 
-    flags &= TLB_INVALID_MASK | TLB_MMIO | TLB_DISCARD_WRITE | TLB_NOTDIRTY;
-    if (flags == 0) {
-        uintptr_t host = (addr & TARGET_PAGE_MASK) + ent->addend;
-        if ((host - start) < length) {
-            qatomic_set(&ent->addr_write, addr | TLB_NOTDIRTY);
-        }
+    /* The full entry last: most entries are empty or for other pages */
+    if (!(addr & mask) && (host - start) < length &&
+        !(full->slow_flags[MMU_DATA_STORE] & mask)) {
+        qatomic_set(&ent->addr_write, addr | TLB_NOTDIRTY);
     }
 }
 
@@ -1443,9 +1443,12 @@ void tlb_reset_dirty(CPUState *cpu, uintptr_t start, uintptr_t length)
     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
         CPUTLBSaved *saved = cpu->neg.tlb.c.saved[mmu_idx];
 
-        tlb_reset_dirty_desc_locked(&cpu->neg.tlb.d[mmu_idx],
-                                    cpu_tlb_fast(cpu, mmu_idx),
-                                    start, length);
+        /* A clean TLB is empty */
+        if (cpu->neg.tlb.c.dirty & (1 << mmu_idx)) {
+            tlb_reset_dirty_desc_locked(&cpu->neg.tlb.d[mmu_idx],
+                                        cpu_tlb_fast(cpu, mmu_idx),
+                                        start, length);
+        }
         for (int i = 0; saved && i < CPU_TLB_SAVED_ASIDS; i++) {
             if (saved[i].stamp) {
                 tlb_reset_dirty_desc_locked(&saved[i].d, &saved[i].f,

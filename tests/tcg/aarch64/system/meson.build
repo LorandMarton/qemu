@@ -53,6 +53,7 @@ tests += {
   },
   'rme_gdi.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
   'semiheap.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
+  'smc-tlb.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
   'tlbi-wfe.c': {
     'cflags': cflags,
     'qemu_args': ['-M', 'virt', '-cpu', 'max', '-smp', '2', qemu_base_args],
