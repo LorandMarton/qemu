@@ -196,3 +196,12 @@ card. ``-global bcm2835-property.num-displays=1`` gives it the framebuffer.
 The Compute Module 4 IO board has a USB2514 hub on the xHCI port; it can be
 added with ``-device usb2514,port=1,id=hub``, and devices plugged in behind
 it with ``port=1.1`` to ``port=1.4``.
+
+The real-time clock of the Compute Module 4 IO board, an NXP PCF85063A, is
+the ``pcf85063`` I2C device at its address 0x51; it runs on the host clock
+and keeps its time across a guest reset. With ``power-lost=on`` it starts
+with the oscillator-stop flag set, as on a board without a backup battery:
+Linux reports the time as invalid until the guest sets it. For example, on
+BSC0::
+
+  -device pcf85063,bus=i2c-bus.0,power-lost=on
