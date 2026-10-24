@@ -473,8 +473,22 @@ void HELPER(sev)(CPUARMState *env)
     CPUState *cs = env_cpu(env);
     CPU_FOREACH(cs) {
         ARMCPU *target_cpu = ARM_CPU(cs);
-        target_cpu->env.event_register = true;
-        if (!qemu_cpu_is_self(cs)) {
+        qatomic_set(&target_cpu->env.event_register, true);
+        if (qemu_cpu_is_self(cs)) {
+            continue;
+        }
+        /*
+         * A vCPU halted in WFE checks for an event, then sleeps on its
+         * halt_cond, both under the BQL: a kick between the two is lost.
+         * Kick it under the BQL.  Pairs with the barrier after setting
+         * halt_reason in HELPER(wfe): either it sees the event or we see
+         * HALT_WFE.
+         */
+        smp_mb();
+        if (qatomic_read(&target_cpu->env.halt_reason) == HALT_WFE) {
+            BQL_LOCK_GUARD();
+            qemu_cpu_kick(cs);
+        } else {
             qemu_cpu_kick(cs);
         }
     }
@@ -630,7 +644,8 @@ void HELPER(wfe)(CPUARMState *env, uint32_t insn_len)
         }
     }
 
-    qatomic_set(&env->halt_reason, HALT_WFE);
+    /* Pairs with the barrier in HELPER(sev) */
+    qatomic_set_mb(&env->halt_reason, HALT_WFE);
     cs->exception_index = EXCP_HLT;
     cs->halted = 1;
     cpu_loop_exit(cs);
@@ -725,7 +740,8 @@ void HELPER(wfet)(CPUARMState *env, uint32_t rd)
         }
     }
 
-    qatomic_set(&env->halt_reason, HALT_WFE);
+    /* Pairs with the barrier in HELPER(sev) */
+    qatomic_set_mb(&env->halt_reason, HALT_WFE);
     cs->exception_index = EXCP_HLT;
     cs->halted = 1;
     cpu_loop_exit(cs);

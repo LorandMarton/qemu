@@ -52,6 +52,10 @@ tests += {
   },
   'rme_gdi.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
   'semiheap.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
+  'sev-wfe.c': {
+    'cflags': cflags,
+    'qemu_args': ['-M', 'virt', '-cpu', 'max', '-smp', '2', qemu_base_args],
+  },
   'semiconsole.c': {
     'cflags': cflags,
     'qemu_args': ['-serial', 'none', '-chardev', 'stdio,mux=on,id=stdio0',
