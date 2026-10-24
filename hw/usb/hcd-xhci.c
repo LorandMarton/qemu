@@ -2242,7 +2242,12 @@ static TRBCCode xhci_configure_slot(XHCIState *xhci, unsigned int slotid,
 
     xhci_dma_read_u32s(xhci, ictx, ictl_ctx, sizeof(ictl_ctx));
 
-    if ((ictl_ctx[0] & 0x3) != 0x0 || (ictl_ctx[1] & 0x3) != 0x1) {
+    /*
+     * D0, D1 and A1 are reserved here. A0 says whether the input slot
+     * context is evaluated: without it (Linux on the Raspberry Pi reconfigures
+     * one endpoint so) the slot's context entries stay as they are.
+     */
+    if ((ictl_ctx[0] & 0x3) != 0x0 || (ictl_ctx[1] & 0x2) != 0x0) {
         DPRINTF("xhci: invalid input context control %08x %08x\n",
                 ictl_ctx[0], ictl_ctx[1]);
         return CC_TRB_ERROR;
@@ -2291,9 +2296,12 @@ static TRBCCode xhci_configure_slot(XHCIState *xhci, unsigned int slotid,
 
     slot_ctx[3] &= ~(SLOT_STATE_MASK << SLOT_STATE_SHIFT);
     slot_ctx[3] |= SLOT_CONFIGURED << SLOT_STATE_SHIFT;
-    slot_ctx[0] &= ~(SLOT_CONTEXT_ENTRIES_MASK << SLOT_CONTEXT_ENTRIES_SHIFT);
-    slot_ctx[0] |= islot_ctx[0] & (SLOT_CONTEXT_ENTRIES_MASK <<
-                                   SLOT_CONTEXT_ENTRIES_SHIFT);
+    if (ictl_ctx[1] & 0x1) {
+        slot_ctx[0] &= ~(SLOT_CONTEXT_ENTRIES_MASK <<
+                         SLOT_CONTEXT_ENTRIES_SHIFT);
+        slot_ctx[0] |= islot_ctx[0] & (SLOT_CONTEXT_ENTRIES_MASK <<
+                                       SLOT_CONTEXT_ENTRIES_SHIFT);
+    }
     DPRINTF("xhci: output slot context: %08x %08x %08x %08x\n",
             slot_ctx[0], slot_ctx[1], slot_ctx[2], slot_ctx[3]);
 

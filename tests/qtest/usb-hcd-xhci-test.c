@@ -59,6 +59,7 @@
 
 #define EP_TYPE_ISOCH_OUT       1
 #define EP_TYPE_CONTROL         4
+#define EP_TYPE_INT_IN          7
 #define EP_TYPE_ISOCH_IN        5
 #define EP_TYPE_INTR_IN         7
 
@@ -467,6 +468,40 @@ static void test_xhci_isoch_ep_type_mismatch(void)
     xhci_test_end(&x);
 }
 
+/*
+ * Configure Endpoint with the endpoint's add flag only, no A0: Linux on
+ * the Raspberry Pi reconfigures an endpoint so. It succeeds, and the
+ * slot's context entries stay.
+ */
+static void test_xhci_configure_ep_no_slot_ctx(void)
+{
+    uint64_t dcbaa, devctx, epctx;
+    XHCITest x;
+
+    if (!xhci_test_supported("usb-kbd")) {
+        return;
+    }
+
+    xhci_test_start(&x, "-device usb-kbd");
+    xhci_configure_ep(&x, 3, EP_TYPE_INT_IN, 4, 8);
+
+    epctx = x.input_ctx + 0x20 * 4;
+    qtest_memset(x.qts, x.input_ctx, 0, 0x1000);
+    qtest_writel(x.qts, x.input_ctx + 0x04, 1 << 3);
+    qtest_writel(x.qts, epctx + 0x00, 4 << 16);
+    qtest_writel(x.qts, epctx + 0x04, (8 << 16) | (EP_TYPE_INT_IN << 3));
+    qtest_writeq(x.qts, epctx + 0x08, xhci_alloc_page(&x) | 1);
+    xhci_command(&x, x.input_ctx,
+                 TRB_TYPE(CR_CONFIGURE_ENDPOINT) | (x.slot << 24));
+
+    dcbaa = xhci_readl(&x, x.oper + XHCI_DCBAAP) |
+            (uint64_t)xhci_readl(&x, x.oper + XHCI_DCBAAP + 4) << 32;
+    devctx = qtest_readq(x.qts, dcbaa + 8 * x.slot);
+    g_assert_cmpuint(qtest_readl(x.qts, devctx) >> 27, ==, 3);
+
+    xhci_test_end(&x);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -487,6 +522,8 @@ int main(int argc, char **argv)
                    test_xhci_intr_mfindex_32bit);
     qtest_add_func("/xhci/pci/isoch/ep-type-mismatch",
                    test_xhci_isoch_ep_type_mismatch);
+    qtest_add_func("/xhci/pci/configure-ep/no-slot-ctx",
+                   test_xhci_configure_ep_no_slot_ctx);
 
     qtest_start("-device nec-usb-xhci,id=xhci"
                 " -drive id=drive0,if=none,file=null-co://,"
