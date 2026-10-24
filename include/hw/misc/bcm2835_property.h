@@ -31,6 +31,12 @@ struct BCM2835PropertyState {
 
     MACAddr macaddr;
     uint32_t board_rev;
+    uint64_t board_serial;
+    /* VideoCore firmware build: time (Unix), variant, version (git hash) */
+    uint32_t fw_revision;
+    uint32_t fw_variant;
+    char *fw_version;
+    uint32_t fw_hash[5];
     uint32_t addr;
     char *command_line;
     bool pending;

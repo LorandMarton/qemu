@@ -52,6 +52,18 @@ Missing devices
 Board interfaces
 ----------------
 
+The board identity is set with properties of ``bcm2835-property``:
+``board-serial`` (64-bit) and ``mac`` give the serial number and the MAC
+address the firmware reports, in the mailbox and in OTP rows 28, 29, 64
+and 65 as on a board, row 30 holding the board revision.
+``firmware-revision`` (the build time, in seconds since the epoch),
+``firmware-variant`` and ``firmware-version`` (starting with the 40 hex
+digits of the git hash) describe the firmware build, as the ``start4.elf``
+of an image does. For example::
+
+  -global bcm2835-property.board-serial=0x51454d55 \
+  -global bcm2835-property.mac=e4:5f:01:51:45:4d
+
 The BCM2711 clock manager runs from a 54 MHz crystal and comes out of reset
 in the state the firmware leaves it for the kernel on a Compute Module 4
 (the ARM at 600 MHz, the PL011 UARTs at 48 MHz, EMMC2 at 100 MHz), so the

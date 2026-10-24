@@ -9,6 +9,7 @@
 #include "qapi/error.h"
 #include "hw/misc/bcm2835_property.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "hw/core/irq.h"
 #include "hw/misc/bcm2835_mbox_defs.h"
@@ -52,8 +53,18 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
         case RPI_FWREQ_PROPERTY_END:
             break;
         case RPI_FWREQ_GET_FIRMWARE_REVISION:
-            stl_le_phys(&s->dma_as, value + 12, 346337);
+            stl_le_phys(&s->dma_as, value + 12, s->fw_revision);
             resplen = 4;
+            break;
+        case RPI_FWREQ_GET_FIRMWARE_VARIANT:
+            stl_le_phys(&s->dma_as, value + 12, s->fw_variant);
+            resplen = 4;
+            break;
+        case RPI_FWREQ_GET_FIRMWARE_HASH:
+            for (int i = 0; i < ARRAY_SIZE(s->fw_hash); i++) {
+                stl_le_phys(&s->dma_as, value + 12 + 4 * i, s->fw_hash[i]);
+            }
+            resplen = sizeof(s->fw_hash);
             break;
         case RPI_FWREQ_GET_BOARD_MODEL:
             qemu_log_mask(LOG_UNIMP,
@@ -71,9 +82,7 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
                              MEMTXATTRS_UNSPECIFIED);
             break;
         case RPI_FWREQ_GET_BOARD_SERIAL:
-            qemu_log_mask(LOG_UNIMP,
-                          "bcm2835_property: 0x%08x get board serial NYI\n",
-                          tag);
+            stq_le_phys(&s->dma_as, value + 12, s->board_serial);
             resplen = 8;
             break;
         case RPI_FWREQ_GET_ARM_MEMORY:
@@ -548,11 +557,57 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
     /* TODO: connect to MAC address of USB NIC device, once we emulate it */
     qemu_macaddr_default_if_unset(&s->macaddr);
 
+    /*
+     * Board identity rows as programmed at the factory, so that otp_dump
+     * matches the mailbox: serial and its complement, revision, MAC.
+     */
+    if (s->board_serial) {
+        bcm2835_otp_set_row(s->otp, 28, (uint32_t)s->board_serial);
+        bcm2835_otp_set_row(s->otp, 29, ~(uint32_t)s->board_serial);
+    }
+    bcm2835_otp_set_row(s->otp, 30, s->board_rev);
+    bcm2835_otp_set_row(s->otp, 64, s->macaddr.a[4] << 24 |
+                        s->macaddr.a[5] << 16);
+    bcm2835_otp_set_row(s->otp, 65, s->macaddr.a[0] << 24 |
+                        s->macaddr.a[1] << 16 | s->macaddr.a[2] << 8 |
+                        s->macaddr.a[3]);
+
+    /*
+     * The version begins with the 40 hex digits of the git hash, which the
+     * hash tag gives as five words, first first
+     */
+    memset(s->fw_hash, 0, sizeof(s->fw_hash));
+    if (s->fw_version) {
+        size_t n = strspn(s->fw_version, "0123456789abcdef");
+
+        if (n != 40 || (s->fw_version[n] && s->fw_version[n] != ' ')) {
+            error_setg(errp, "bcm2835_property: firmware-version must begin "
+                       "with a git hash of 40 hex digits");
+            return;
+        }
+        for (int i = 0; i < 40; i++) {
+            s->fw_hash[i / 8] = s->fw_hash[i / 8] << 4 |
+                                g_ascii_xdigit_value(s->fw_version[i]);
+        }
+    }
+
     bcm2835_property_reset(dev);
 }
 
 static const Property bcm2835_property_props[] = {
     DEFINE_PROP_UINT32("board-rev", BCM2835PropertyState, board_rev, 0),
+    DEFINE_PROP_UINT64("board-serial", BCM2835PropertyState, board_serial, 0),
+    DEFINE_PROP_MACADDR("mac", BCM2835PropertyState, macaddr),
+    /*
+     * The firmware build (VC_BUILD_ID_* of start4.elf): its time, the
+     * variant (1 start, 2 start_x, 3 start_db, 4 start_cd) and the version,
+     * "<git hash> (clean)"
+     */
+    DEFINE_PROP_UINT32("firmware-revision", BCM2835PropertyState, fw_revision,
+                       346337),
+    DEFINE_PROP_UINT32("firmware-variant", BCM2835PropertyState, fw_variant,
+                       0),
+    DEFINE_PROP_STRING("firmware-version", BCM2835PropertyState, fw_version),
     DEFINE_PROP_STRING("command-line", BCM2835PropertyState, command_line),
 };
 
