@@ -10,6 +10,9 @@
  * size of one host I/O; CMD18 reads it back. With Auto CMD23 the
  * controller sends the count, so the transfer ends without CMD12.
  *
+ * The BCM2711 EMMC2 capabilities: SDMA, ADMA2, an 8-bit bus and a 50 kHz
+ * timeout clock; an ADMA2 read.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -22,7 +25,25 @@
 
 #define EMMC2           0xfe340000
 #define SDHC_ARGUMENT2  0x00
+#define SDHC_HOSTCTL    0x28
 #define SDHC_PWRCON     0x29
+#define SDHC_NORINTSTS  0x30
+#define SDHC_NORINTSTSEN 0x34
+#define SDHC_ADMASYSADDR 0x58
+#define SDHC_TRNS_DMA   0x0001
+#define SDHC_HOSTCTL_ADMA2_32   (2 << 3)
+#define SDHC_NIS_TRSCMP 0x0002
+
+#define CAP_TOCLK       0x3f
+#define CAP_TOCLK_KHZ   BIT(7)
+#define CAP_8BIT        BIT(18)
+#define CAP_ADMA2       BIT(19)
+#define CAP_SDMA        BIT(22)
+
+/* ADMA2 descriptor attributes: valid, end, transfer */
+#define ADMA2_TRAN_END  0x23
+#define ADMA_DESC       0x100000
+#define ADMA_BUF        0x101000
 #define SDHC_TRNS_ACMD23 0x0008
 
 #define RSP_NONE        0
@@ -255,6 +276,44 @@ static void test_auto_cmd23(void)
     unlink(path);
 }
 
+static void test_caps(void)
+{
+    g_autofree char *path = NULL;
+    uint8_t wr[8 * 512], rd[8 * 512];
+    QTestState *qts;
+    uint64_t caps;
+    int fd;
+
+    qts = emmc_file_init(&fd, &path);
+    caps = qtest_readq(qts, EMMC2 + SDHC_CAPAB);
+    g_assert_cmphex(caps & (CAP_SDMA | CAP_ADMA2 | CAP_8BIT), ==,
+                    CAP_SDMA | CAP_ADMA2 | CAP_8BIT);
+    g_assert_cmphex(caps & (CAP_TOCLK | CAP_TOCLK_KHZ), ==, 50);
+
+    /* 8 blocks by ADMA2, one descriptor, CMD12 to end */
+    fill(wr, sizeof(wr), 5);
+    g_assert_cmpint(pwrite(fd, wr, sizeof(wr), 2 * BOOT_SIZE + 400 * 512),
+                    ==, sizeof(wr));
+    qtest_writel(qts, ADMA_DESC, ADMA2_TRAN_END | sizeof(wr) << 16);
+    qtest_writel(qts, ADMA_DESC + 4, ADMA_BUF);
+    qtest_writew(qts, EMMC2 + SDHC_NORINTSTSEN, 0xffff);
+    qtest_writeb(qts, EMMC2 + SDHC_HOSTCTL, SDHC_HOSTCTL_ADMA2_32);
+    qtest_writel(qts, EMMC2 + SDHC_ADMASYSADDR, ADMA_DESC);
+    sdhci_cmd_regs(qts, EMMC2, 512, 8, 400 * 512,
+                   SDHC_TRNS_DMA | SDHC_TRNS_MULTI | SDHC_TRNS_BLK_CNT_EN |
+                   SDHC_TRNS_READ,
+                   18 << 8 | SDHC_CMD_DATA_PRESENT | RSP_48);
+    g_assert_cmphex(qtest_readw(qts, EMMC2 + SDHC_NORINTSTS) &
+                    SDHC_NIS_TRSCMP, ==, SDHC_NIS_TRSCMP);
+    emmc_cmd(qts, 12, 0, RSP_48_BUSY);
+    qtest_memread(qts, ADMA_BUF, rd, sizeof(rd));
+    g_assert_cmpmem(rd, sizeof(rd), wr, sizeof(wr));
+
+    qtest_quit(qts);
+    close(fd);
+    unlink(path);
+}
+
 static void test_identity(void)
 {
     uint8_t preset[512] = { 0 };
@@ -296,5 +355,6 @@ int main(int argc, char **argv)
     qtest_add_func("/bcm2838-emmc2/identity", test_identity);
     qtest_add_func("/bcm2838-emmc2/multi-block", test_multi_block);
     qtest_add_func("/bcm2838-emmc2/auto-cmd23", test_auto_cmd23);
+    qtest_add_func("/bcm2838-emmc2/caps", test_caps);
     return g_test_run();
 }

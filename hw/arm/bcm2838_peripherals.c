@@ -27,6 +27,18 @@
 
 /* Capabilities for SD controller: no DMA, high-speed, default clocks etc. */
 #define BCM2835_SDHC_CAPAREG 0x52134b4
+/*
+ * EMMC2 additionally does SDMA and ADMA2 (Linux: "SDHCI controller on
+ * fe340000.mmc using ADMA") and has an 8-bit bus for the CM4 eMMC. Its
+ * timeout clock is 50 kHz: with it Linux computes the CM4's
+ * discard_max_bytes (2344615936 for the Samsung BJTD4R; max_busy_timeout
+ * 2^27 / 50 kHz) instead of 3670016.
+ */
+#define BCM2838_EMMC2_CAPAREG ((BCM2835_SDHC_CAPAREG & ~0xffULL) | \
+                               50 /* timeout clock, kHz */ | \
+                               BIT(22) /* SDMA */ | \
+                               BIT(19) /* ADMA2 */ | \
+                               BIT(18) /* 8-bit bus */)
 
 static void bcm2838_peripherals_init(Object *obj)
 {
@@ -163,7 +175,7 @@ static void bcm2838_peripherals_realize(DeviceState *dev, Error **errp)
     object_property_set_uint(OBJECT(&s->emmc2), "sd-spec-version", 3,
                              &error_abort);
     object_property_set_uint(OBJECT(&s->emmc2), "capareg",
-                             BCM2835_SDHC_CAPAREG, &error_abort);
+                             BCM2838_EMMC2_CAPAREG, &error_abort);
     object_property_set_bool(OBJECT(&s->emmc2), "pending-insert-quirk", true,
                              &error_abort);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->emmc2), errp)) {
