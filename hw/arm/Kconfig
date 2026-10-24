@@ -353,6 +353,7 @@ config RASPI
     select USB_XHCI_SYSBUS # BCM2711 built-in xHCI
     select BCM2835_SPI
     select BCM2835_I2C
+    select BRCMSTB_I2C # BCM2711 HDMI DDC
     select BCM4345 # CM4 wireless chip
     imply PCF85063 # CM4 RTC (i2c-rtc,pcf85063a overlay)
 

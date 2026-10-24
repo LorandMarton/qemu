@@ -17,6 +17,14 @@
 
 #define RPIVID_ASB_OFFSET       0xc11000
 
+/* The always-on (AON) block */
+#define AON_DVP_OFFSET          0xf00000
+#define AON_L2_INTC_OFFSET      0xf00100
+static const hwaddr aon_ddc_offset[BCM2838_NUM_HDMI] = { 0xf04500, 0xf09500 };
+static const hwaddr aon_autoi2c_offset[BCM2838_NUM_HDMI] = {
+    0xf00b00, 0xf05b00
+};
+
 
 #define PCIE_RC_OFFSET          0x1500000
 #define PCIE_MMIO_OFFSET        0xc0000000
@@ -106,6 +114,17 @@ static void bcm2838_peripherals_init(Object *obj)
     object_initialize_child(obj, "asb", &s->asb, TYPE_BCM2838_ASB);
     object_initialize_child(obj, "rpivid-asb", &s->rpivid_asb,
                             TYPE_BCM2838_ASB);
+
+    object_initialize_child(obj, "dvp", &s->dvp, TYPE_BCM2838_DVP);
+    object_initialize_child(obj, "aon-intc", &s->aon_intc,
+                            TYPE_BCM2838_L2_INTC);
+    for (int i = 0; i < BCM2838_NUM_HDMI; i++) {
+        g_autofree char *name = g_strdup_printf("ddc%d", i);
+
+        object_initialize_child(obj, name, &s->ddc[i], TYPE_BRCMSTB_I2C);
+        qdev_prop_set_bit(DEVICE(&s->ddc[i]), "auto-i2c", true);
+        qdev_prop_set_string(DEVICE(&s->ddc[i]), "bus-name", name);
+    }
 
     object_property_add_const_link(OBJECT(&s->gpio), "sdbus-sdhci",
                                    OBJECT(&s_base->sdhci.sdbus));
@@ -361,6 +380,27 @@ static void bcm2838_peripherals_realize(DeviceState *dev, Error **errp)
                     sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->asb), 0));
     memory_region_add_subregion(&s_base->peri_mr, RPIVID_ASB_OFFSET,
                     sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->rpivid_asb), 0));
+
+    /* AON: the HDMI DVP, the L2 interrupt controller, the DDC buses */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->dvp), errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(&s->aon_intc), errp)) {
+        return;
+    }
+    memory_region_add_subregion(&s_base->peri_mr, AON_DVP_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->dvp), 0));
+    memory_region_add_subregion(&s_base->peri_mr, AON_L2_INTC_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->aon_intc), 0));
+    for (int i = 0; i < BCM2838_NUM_HDMI; i++) {
+        SysBusDevice *ddc = SYS_BUS_DEVICE(&s->ddc[i]);
+
+        if (!sysbus_realize(ddc, errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s_base->peri_mr, aon_ddc_offset[i],
+                                    sysbus_mmio_get_region(ddc, 0));
+        memory_region_add_subregion(&s_base->peri_mr, aon_autoi2c_offset[i],
+                                    sysbus_mmio_get_region(ddc, 1));
+    }
 
     /*
      * xHCI: one USB 2.0 root port and no USB 3 port, as Linux reports it on

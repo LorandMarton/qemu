@@ -208,6 +208,10 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
                                             GIC_SPI_INTERRUPT_GPIO_0 + i));
     }
 
+    /* The AON L2 interrupt controller (HDMI hot-plug, CEC) */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps->aon_intc), 0,
+                       qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_AON_L2));
+
 
     /* Connect AUX / UART1 to the interrupt controller */
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->aux), 0,

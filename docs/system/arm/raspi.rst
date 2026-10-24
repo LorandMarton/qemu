@@ -46,6 +46,8 @@ Implemented devices
  * xHCI USB host controller, interface version 1.1 with 64-byte contexts,
    one USB 2.0 port (raspi4b, raspicm4)
  * AXI bridge (ASB) controls of the power domains (raspi4b, raspicm4)
+ * Always-on block: HDMI DVP, L2 interrupt controller, HDMI DDC I2C
+   controllers (raspi4b, raspicm4)
  * BCM4345/6 (CYW43455) wireless LAN on SDIO (raspicm4)
 
 Missing devices

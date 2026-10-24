@@ -13,6 +13,9 @@
 #include "hw/misc/bcm2838_rng200.h"
 #include "hw/misc/bcm2838_thermal.h"
 #include "hw/misc/bcm2838_asb.h"
+#include "hw/misc/bcm2838_dvp.h"
+#include "hw/intc/bcm2838_l2_intc.h"
+#include "hw/i2c/brcmstb_i2c.h"
 #include "hw/arm/bcm2838_pcie.h"
 #include "hw/net/bcm2838_genet.h"
 #include "hw/sd/sdhci.h"
@@ -23,6 +26,7 @@
 #define GIC_SPI_INTERRUPT_MPHI         40
 #define GIC_SPI_INTERRUPT_GPIO_0       113 /* banks 0, 1, 2, any: 113-116 */
 #define GIC_SPI_INTERRUPT_DWC2         73
+#define GIC_SPI_INTERRUPT_AON_L2       96
 #define GIC_SPI_INTERRUPT_DMA_0        80
 #define GIC_SPI_INTERRUPT_DMA_6        86
 #define GIC_SPI_INTERRUPT_DMA_7_8      87
@@ -68,6 +72,7 @@
 #define BCM2838_SPI3_OFFSET     0x204600
 #define BCM2838_SPI_STRIDE      0x200
 #define BCM2838_NUM_EXTRA_SPIS  4
+#define BCM2838_NUM_HDMI 2
 /* BCM2711 built-in xHCI (used with otg_mode=1, as on the CM4 IO board) */
 #define BCM2838_XHCI_OFFSET     0x9c0000
 #define BCM2838_XHCI_SIZE       0x100000
@@ -107,6 +112,11 @@ struct BCM2838PeripheralState {
 
     BCM2838AsbState asb;
     BCM2838AsbState rpivid_asb;
+
+    /* Always-on (AON) block: HDMI DVP, L2 interrupt controller, DDC */
+    BCM2838DvpState dvp;
+    BCM2838L2IntcState aon_intc;
+    BrcmstbI2CState ddc[BCM2838_NUM_HDMI];
 
 };
 

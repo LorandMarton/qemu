@@ -1043,6 +1043,8 @@ F: hw/arm/raspi*.c
 F: hw/*/bcm283*
 F: include/hw/arm/rasp*
 F: include/hw/*/bcm283*
+F: hw/i2c/brcmstb_i2c.c
+F: include/hw/i2c/brcmstb_i2c.h
 F: hw/rtc/pcf85063.c
 F: hw/sd/bcm4345*
 F: include/hw/sd/bcm4345.h
