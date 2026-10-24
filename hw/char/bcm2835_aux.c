@@ -22,6 +22,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/char/bcm2835_aux.h"
+#include "chardev/char-serial.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
@@ -47,6 +48,13 @@
 #define RX_INT  0x1
 #define TX_INT  0x2
 
+/* LCR, MCR, MSR and STAT bits */
+#define LCR_DLAB    0x80
+#define MCR_RTS     0x02
+#define MSR_CTS     0x10
+#define STAT_RTS    0x40
+#define STAT_CTS    0x80
+
 static void bcm2835_aux_update(BCM2835AuxState *s)
 {
     /* signal an interrupt if either:
@@ -63,6 +71,25 @@ static void bcm2835_aux_update(BCM2835AuxState *s)
     qemu_set_irq(s->irq, s->iir != 0);
 }
 
+/*
+ * Pass the baud rate (system clock / (8 * (BAUD + 1))), the data
+ * size and RTS to a host serial port; other backends ignore the ioctls.
+ */
+static void bcm2835_aux_update_params(BCM2835AuxState *s)
+{
+    QEMUSerialSetParams ssp = {
+        .speed = s->clock_hz / (8 * ((uint64_t)s->baud + 1)),
+        .parity = 'N',
+        .data_bits = (s->lcr & 1) ? 8 : 7,
+        .stop_bits = 1,
+    };
+    int flags = (s->mcr & MCR_RTS) ? CHR_TIOCM_RTS | CHR_TIOCM_DTR
+                                   : CHR_TIOCM_DTR;
+
+    qemu_chr_fe_ioctl(&s->chr, CHR_IOCTL_SERIAL_SET_PARAMS, &ssp);
+    qemu_chr_fe_ioctl(&s->chr, CHR_IOCTL_SERIAL_SET_TIOCM, &flags);
+}
+
 static uint64_t bcm2835_aux_read(void *opaque, hwaddr offset, unsigned size)
 {
     BCM2835AuxState *s = opaque;
@@ -76,7 +103,9 @@ static uint64_t bcm2835_aux_read(void *opaque, hwaddr offset, unsigned size)
         return 1; /* mini UART permanently enabled */
 
     case AUX_MU_IO_REG:
-        /* "DLAB bit set means access baudrate register" is NYI */
+        if (s->lcr & LCR_DLAB) {
+            return s->baud & 0xff;
+        }
         c = s->read_fifo[s->read_pos];
         if (s->read_count > 0) {
             s->read_count--;
@@ -89,7 +118,9 @@ static uint64_t bcm2835_aux_read(void *opaque, hwaddr offset, unsigned size)
         return c;
 
     case AUX_MU_IER_REG:
-        /* "DLAB bit set means access baudrate register" is NYI */
+        if (s->lcr & LCR_DLAB) {
+            return s->baud >> 8;
+        }
         return 0xc0 | s->ier; /* FIFO enables always read 1 */
 
     case AUX_MU_IIR_REG:
@@ -109,12 +140,10 @@ static uint64_t bcm2835_aux_read(void *opaque, hwaddr offset, unsigned size)
         return res;
 
     case AUX_MU_LCR_REG:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_LCR_REG unsupported\n", __func__);
-        return 0;
+        return s->lcr;
 
     case AUX_MU_MCR_REG:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_MCR_REG unsupported\n", __func__);
-        return 0;
+        return s->mcr;
 
     case AUX_MU_LSR_REG:
         res = 0x60; /* tx idle, empty */
@@ -124,18 +153,19 @@ static uint64_t bcm2835_aux_read(void *opaque, hwaddr offset, unsigned size)
         return res;
 
     case AUX_MU_MSR_REG:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_MSR_REG unsupported\n", __func__);
-        return 0;
+        /* CTS status: the inverse of the UART1_CTS pin */
+        return s->cts ? MSR_CTS : 0;
 
     case AUX_MU_SCRATCH:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_SCRATCH unsupported\n", __func__);
-        return 0;
+        return s->scratch;
 
     case AUX_MU_CNTL_REG:
-        return 0x3; /* tx, rx enabled */
+        return s->cntl;
 
     case AUX_MU_STAT_REG:
         res = 0x30e; /* space in the output buffer, empty tx fifo, idle tx/rx */
+        res |= (s->mcr & MCR_RTS) ? STAT_RTS : 0;
+        res |= s->cts ? STAT_CTS : 0;
         if (s->read_count > 0) {
             res |= 0x1; /* data in input buffer */
             assert(s->read_count <= BCM2835_AUX_RX_FIFO_LEN);
@@ -144,8 +174,7 @@ static uint64_t bcm2835_aux_read(void *opaque, hwaddr offset, unsigned size)
         return res;
 
     case AUX_MU_BAUD_REG:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_BAUD_REG unsupported\n", __func__);
-        return 0;
+        return s->baud;
 
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset %"HWADDR_PRIx"\n",
@@ -170,7 +199,11 @@ static void bcm2835_aux_write(void *opaque, hwaddr offset, uint64_t value,
         break;
 
     case AUX_MU_IO_REG:
-        /* "DLAB bit set means access baudrate register" is NYI */
+        if (s->lcr & LCR_DLAB) {
+            /* Divisor latch access: the byte is not transmitted */
+            s->baud = (s->baud & 0xff00) | (value & 0xff);
+            break;
+        }
         ch = value;
         /* XXX this blocks entire thread. Rewrite to use
          * qemu_chr_fe_write and background I/O callbacks */
@@ -178,7 +211,10 @@ static void bcm2835_aux_write(void *opaque, hwaddr offset, uint64_t value,
         break;
 
     case AUX_MU_IER_REG:
-        /* "DLAB bit set means access baudrate register" is NYI */
+        if (s->lcr & LCR_DLAB) {
+            s->baud = (s->baud & 0xff) | ((value & 0xff) << 8);
+            break;
+        }
         s->ier = value & (TX_INT | RX_INT);
         bcm2835_aux_update(s);
         break;
@@ -190,23 +226,29 @@ static void bcm2835_aux_write(void *opaque, hwaddr offset, uint64_t value,
         break;
 
     case AUX_MU_LCR_REG:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_LCR_REG unsupported\n", __func__);
+        if ((s->lcr & LCR_DLAB) && !(value & LCR_DLAB)) {
+            s->lcr = value & 0xc3;
+            bcm2835_aux_update_params(s);
+        }
+        s->lcr = value & 0xc3;
         break;
 
     case AUX_MU_MCR_REG:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_MCR_REG unsupported\n", __func__);
+        s->mcr = value & MCR_RTS;
+        bcm2835_aux_update_params(s);
         break;
 
     case AUX_MU_SCRATCH:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_SCRATCH unsupported\n", __func__);
+        s->scratch = value;
         break;
 
     case AUX_MU_CNTL_REG:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_CNTL_REG unsupported\n", __func__);
+        s->cntl = value & 0xff;
         break;
 
     case AUX_MU_BAUD_REG:
-        qemu_log_mask(LOG_UNIMP, "%s: AUX_MU_BAUD_REG unsupported\n", __func__);
+        s->baud = value;
+        bcm2835_aux_update_params(s);
         break;
 
     default:
@@ -260,7 +302,7 @@ static const MemoryRegionOps bcm2835_aux_ops = {
 
 static const VMStateDescription vmstate_bcm2835_aux = {
     .name = TYPE_BCM2835_AUX,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(read_fifo, BCM2835AuxState,
@@ -269,9 +311,38 @@ static const VMStateDescription vmstate_bcm2835_aux = {
         VMSTATE_UINT8(read_count, BCM2835AuxState),
         VMSTATE_UINT8(ier, BCM2835AuxState),
         VMSTATE_UINT8(iir, BCM2835AuxState),
+        VMSTATE_UINT8_V(lcr, BCM2835AuxState, 2),
+        VMSTATE_UINT8_V(mcr, BCM2835AuxState, 2),
+        VMSTATE_UINT8_V(scratch, BCM2835AuxState, 2),
+        VMSTATE_UINT8_V(cntl, BCM2835AuxState, 2),
+        VMSTATE_UINT16_V(baud, BCM2835AuxState, 2),
+        VMSTATE_BOOL_V(cts, BCM2835AuxState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
+
+/* "cts" input: 1 = CTS asserted (UART1_CTS pin low or not routed) */
+static void bcm2835_aux_cts_in(void *opaque, int n, int level)
+{
+    BCM2835AuxState *s = opaque;
+
+    s->cts = level;
+}
+
+static void bcm2835_aux_reset(DeviceState *dev)
+{
+    BCM2835AuxState *s = BCM2835_AUX(dev);
+
+    s->read_pos = 0;
+    s->read_count = 0;
+    s->ier = 0;
+    s->lcr = 0;
+    s->mcr = 0;
+    s->scratch = 0;
+    s->cntl = 0x3; /* tx, rx enabled */
+    s->baud = 0;
+    bcm2835_aux_update(s);
+}
 
 static void bcm2835_aux_init(Object *obj)
 {
@@ -282,6 +353,9 @@ static void bcm2835_aux_init(Object *obj)
                           TYPE_BCM2835_AUX, 0x100);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+
+    s->cts = true;
+    qdev_init_gpio_in_named(DEVICE(obj), bcm2835_aux_cts_in, "cts", 1);
 }
 
 static void bcm2835_aux_realize(DeviceState *dev, Error **errp)
@@ -294,6 +368,8 @@ static void bcm2835_aux_realize(DeviceState *dev, Error **errp)
 
 static const Property bcm2835_aux_props[] = {
     DEFINE_PROP_CHR("chardev", BCM2835AuxState, chr),
+    /* VPU core clock, from which the mini UART derives its baud rate */
+    DEFINE_PROP_UINT32("clock-hz", BCM2835AuxState, clock_hz, 500000000),
 };
 
 static void bcm2835_aux_class_init(ObjectClass *oc, const void *data)
@@ -301,6 +377,7 @@ static void bcm2835_aux_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = bcm2835_aux_realize;
+    device_class_set_legacy_reset(dc, bcm2835_aux_reset);
     dc->vmsd = &vmstate_bcm2835_aux;
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
     device_class_set_props(dc, bcm2835_aux_props);

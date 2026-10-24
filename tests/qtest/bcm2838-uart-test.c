@@ -8,11 +8,15 @@
  * CTS flow control (has-cts): in loopback mode CR.RTS drives CTS, so the
  * TX FIFO is held until the guest raises RTS.
  *
+ * The mini UART divisor latch, and its rate on a host serial port.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bitops.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 #define UART0           0xfe201000
 #define UARTDR          0x00
@@ -41,6 +45,39 @@
 #define CR_CTSEN        (1 << 15)
 
 #define INT_CTS         (1 << 1)
+
+#define AUX_BASE        0xfe215000
+#define AUX_MU_IO       0x40
+#define AUX_MU_IER      0x44
+#define AUX_MU_LCR      0x4c
+#define AUX_MU_MSR      0x58
+#define AUX_MU_STAT     0x64
+#define AUX_MU_BAUD     0x68
+#define MU_LCR_DLAB     BIT(7)
+#define MU_LCR_8BIT     3
+#define MU_MSR_CTS      BIT(4)
+#define MU_STAT_CTS     BIT(7)
+
+/* -serial order of the machine: UART0, mini UART, UART2..UART5 */
+static QTestState *uart_init(void)
+{
+    return qtest_init("-M raspi4b "
+                      "-chardev ringbuf,id=mu -chardev ringbuf,id=u3 "
+                      "-serial null -serial chardev:mu "
+                      "-serial null -serial chardev:u3");
+}
+
+static char *ringbuf_read(QTestState *qts, const char *id)
+{
+    QDict *resp;
+    char *data;
+
+    resp = qtest_qmp(qts, "{ 'execute': 'ringbuf-read', 'arguments': "
+                     "{ 'device': %s, 'size': 64, 'format': 'utf8' } }", id);
+    data = g_strdup(qdict_get_str(resp, "return"));
+    qobject_unref(resp);
+    return data;
+}
 
 /* The PL011 clock is 48 MHz; LCR_H latches the divisor */
 static void uart_setup(QTestState *qts, uint32_t ibrd, uint32_t fbrd,
@@ -94,8 +131,54 @@ static void test_cts_flow_control(void)
     qtest_quit(qts);
 }
 
+static void test_aux_dlab(void)
+{
+    QTestState *qts = uart_init();
+    g_autofree char *out1 = NULL;
+    g_autofree char *out2 = NULL;
+
+    /* Divisor latch access: IO and IER hold the baud rate register */
+    qtest_writel(qts, AUX_BASE + AUX_MU_LCR, MU_LCR_DLAB | MU_LCR_8BIT);
+    qtest_writel(qts, AUX_BASE + AUX_MU_IO, 0x0e);
+    qtest_writel(qts, AUX_BASE + AUX_MU_IER, 0x01);
+    g_assert_cmphex(qtest_readl(qts, AUX_BASE + AUX_MU_IO), ==, 0x0e);
+    g_assert_cmphex(qtest_readl(qts, AUX_BASE + AUX_MU_IER), ==, 0x01);
+    qtest_writel(qts, AUX_BASE + AUX_MU_LCR, MU_LCR_8BIT);
+    g_assert_cmphex(qtest_readl(qts, AUX_BASE + AUX_MU_BAUD), ==, 0x010e);
+    g_assert_cmphex(qtest_readl(qts, AUX_BASE + AUX_MU_LCR), ==, MU_LCR_8BIT);
+    out1 = ringbuf_read(qts, "mu");
+    g_assert_cmpstr(out1, ==, "");
+
+    qtest_writel(qts, AUX_BASE + AUX_MU_IO, 'x');
+    out2 = ringbuf_read(qts, "mu");
+    g_assert_cmpstr(out2, ==, "x");
+
+    qtest_quit(qts);
+}
+
 #ifdef CONFIG_LINUX
 #include <termios.h>
+
+/* A pty for -chardev serial: returns the master, *slave is the tty */
+static int pty_open(int *slave)
+{
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+
+    g_assert_cmpint(master, >=, 0);
+    g_assert_cmpint(grantpt(master), ==, 0);
+    g_assert_cmpint(unlockpt(master), ==, 0);
+    *slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+    g_assert_cmpint(*slave, >=, 0);
+    return master;
+}
+
+static speed_t pty_speed(int slave)
+{
+    struct termios t;
+
+    g_assert_cmpint(tcgetattr(slave, &t), ==, 0);
+    return cfgetospeed(&t);
+}
 
 static void test_line_settings(void)
 {
@@ -116,13 +199,7 @@ static void test_line_settings(void)
     struct termios t;
     int master, slave;
 
-    master = posix_openpt(O_RDWR | O_NOCTTY);
-    g_assert_cmpint(master, >=, 0);
-    g_assert_cmpint(grantpt(master), ==, 0);
-    g_assert_cmpint(unlockpt(master), ==, 0);
-    slave = open(ptsname(master), O_RDWR | O_NOCTTY);
-    g_assert_cmpint(slave, >=, 0);
-
+    master = pty_open(&slave);
     qts = qtest_initf("-M raspi4b -chardev serial,id=s0,path=%s "
                       "-serial chardev:s0", ptsname(master));
 
@@ -137,6 +214,34 @@ static void test_line_settings(void)
     close(slave);
     close(master);
 }
+
+/* rate = 500 MHz VPU clock / 8 (BAUD + 1), nearest standard rate */
+static void test_aux_host_line(void)
+{
+    QTestState *qts;
+    int master, slave;
+
+    master = pty_open(&slave);
+    qts = qtest_initf("-M raspi4b -chardev serial,id=mu,path=%s "
+                      "-serial null -serial chardev:mu", ptsname(master));
+
+    /* 115313 baud through the BAUD register */
+    qtest_writel(qts, AUX_BASE + AUX_MU_LCR, MU_LCR_8BIT);
+    qtest_writel(qts, AUX_BASE + AUX_MU_BAUD, 541);
+    g_assert_cmpuint(pty_speed(slave), ==, B115200);
+
+    /* 9600 baud through the divisor latch, set when DLAB clears */
+    qtest_writel(qts, AUX_BASE + AUX_MU_LCR, MU_LCR_DLAB | MU_LCR_8BIT);
+    qtest_writel(qts, AUX_BASE + AUX_MU_IO, 6509 & 0xff);
+    qtest_writel(qts, AUX_BASE + AUX_MU_IER, 6509 >> 8);
+    g_assert_cmpuint(pty_speed(slave), ==, B115200);
+    qtest_writel(qts, AUX_BASE + AUX_MU_LCR, MU_LCR_8BIT);
+    g_assert_cmpuint(pty_speed(slave), ==, B9600);
+
+    qtest_quit(qts);
+    close(slave);
+    close(master);
+}
 #endif
 
 int main(int argc, char **argv)
@@ -144,8 +249,10 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 #ifdef CONFIG_LINUX
     qtest_add_func("/bcm2838-uart/pl011/line-settings", test_line_settings);
+    qtest_add_func("/bcm2838-uart/aux/host-line", test_aux_host_line);
 #endif
     qtest_add_func("/bcm2838-uart/pl011/cts-flow-control",
                    test_cts_flow_control);
+    qtest_add_func("/bcm2838-uart/aux/dlab", test_aux_dlab);
     return g_test_run();
 }

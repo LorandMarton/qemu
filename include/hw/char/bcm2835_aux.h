@@ -30,6 +30,11 @@ struct BCM2835AuxState {
     uint8_t read_fifo[BCM2835_AUX_RX_FIFO_LEN];
     uint8_t read_pos, read_count;
     uint8_t ier, iir;
+    /* Line, modem and baud registers; CTS input */
+    uint8_t lcr, mcr, scratch, cntl;
+    uint16_t baud;
+    bool cts;
+    uint32_t clock_hz;
 };
 
 #endif
