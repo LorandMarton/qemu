@@ -2,7 +2,8 @@
  * QTest testcase for the Raspberry Pi 4 boards (raspi4b, raspicm4)
  *
  * raspicm4 as a CM4 Rev 1.0 8 GiB reports itself: the board revision and
- * the ARM memory below the VideoCore carve-out.
+ * the ARM memory below the VideoCore carve-out; the generic timer at the
+ * 54 MHz crystal frequency.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -68,9 +69,27 @@ static void test_cm4_identity(void)
     qtest_quit(qts);
 }
 
+static void test_cntfrq(const void *machine)
+{
+    QTestState *qts = qtest_initf("-M %s", (const char *)machine);
+    QDict *rsp;
+
+    for (int n = 0; n < 4; n++) {
+        g_autofree char *path = g_strdup_printf("/machine/soc/cpu[%d]", n);
+
+        rsp = qtest_qmp(qts, "{ 'execute': 'qom-get', 'arguments': "
+                        "{ 'path': %s, 'property': 'cntfrq' } }", path);
+        g_assert_cmpuint(qdict_get_int(rsp, "return"), ==, 54000000);
+        qobject_unref(rsp);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/raspi4/cm4/identity", test_cm4_identity);
+    qtest_add_data_func("/raspi4/raspi4b/cntfrq", "raspi4b", test_cntfrq);
+    qtest_add_data_func("/raspi4/raspicm4/cntfrq", "raspicm4", test_cntfrq);
     return g_test_run();
 }

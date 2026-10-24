@@ -90,6 +90,10 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
         object_property_set_int(OBJECT(&s_base->cpu[n].core), "mp-affinity",
                                 (bc_base->clusterid << 8) | n, &error_abort);
 
+        /* Generic timer clocked from the 54 MHz crystal */
+        object_property_set_int(OBJECT(&s_base->cpu[n].core), "cntfrq",
+                                BCM2838_CNTFRQ_HZ, &error_abort);
+
         /* set periphbase/CBAR value for CPU-local registers */
         object_property_set_int(OBJECT(&s_base->cpu[n].core), "reset-cbar",
                                 bc_base->peri_base, &error_abort);
