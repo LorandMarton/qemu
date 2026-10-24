@@ -43,8 +43,10 @@ static void bcm2838_peripherals_init(Object *obj)
     /* Random Number Generator */
     object_initialize_child(obj, "rng200", &s->rng200, TYPE_BCM2838_RNG200);
 
-    /* Thermal */
+    /* Thermal; the firmware's measure_temp reads it too */
     object_initialize_child(obj, "thermal", &s->thermal, TYPE_BCM2838_THERMAL);
+    object_property_add_const_link(OBJECT(&s_base->property), "thermal",
+                                   OBJECT(&s->thermal));
 
     /* PCIe Host Bridge */
     object_initialize_child(obj, "pcie-host", &s->pcie_host,

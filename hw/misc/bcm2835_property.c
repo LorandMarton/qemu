@@ -752,6 +752,11 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
     obj = object_property_get_link(OBJECT(dev), "otp", &error_abort);
     s->otp = BCM2835_OTP(obj);
 
+    if (object_property_find(OBJECT(dev), "thermal")) {
+        obj = object_property_get_link(OBJECT(dev), "thermal", &error_abort);
+        s->thermal = BCM2838_THERMAL(obj);
+    }
+
     /* TODO: connect to MAC address of USB NIC device, once we emulate it */
     qemu_macaddr_default_if_unset(&s->macaddr);
 

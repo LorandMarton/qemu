@@ -18,6 +18,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bcm2838ThermalState, BCM2838_THERMAL)
 struct Bcm2838ThermalState {
     SysBusDevice busdev;
     MemoryRegion iomem;
+    int32_t temperature;    /* die temperature, millidegrees Celsius */
 };
+
+/* The sensor's 10-bit code for the current temperature */
+uint16_t bcm2838_thermal_get_code(Bcm2838ThermalState *s);
 
 #endif /* BCM2838_THERMAL_H */

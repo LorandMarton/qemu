@@ -52,6 +52,13 @@ Missing devices
 Board interfaces
 ----------------
 
+The BCM2711 die temperature is the ``temperature`` property of the thermal
+sensor, in millidegrees Celsius (25000 by default; the range the 10-bit
+sensor code covers, -88161 to 410040); the guest reads the nearest code, and
+``vcgencmd measure_temp`` converts it as the firmware does::
+
+  (qemu) qom-set /machine/soc/peripherals/thermal temperature 85000
+
 The board identity is set with properties of ``bcm2835-property``:
 ``board-serial`` (64-bit) and ``mac`` give the serial number and the MAC
 address the firmware reports, in the mailbox and in OTP rows 28, 29, 64

@@ -12,6 +12,7 @@
 #include "net/net.h"
 #include "hw/display/bcm2835_fb.h"
 #include "hw/nvram/bcm2835_otp.h"
+#include "hw/misc/bcm2838_thermal.h"
 #include "qom/object.h"
 
 #define TYPE_BCM2835_PROPERTY "bcm2835-property"
@@ -28,6 +29,7 @@ struct BCM2835PropertyState {
     qemu_irq mbox_irq;
     BCM2835FBState *fbdev;
     BCM2835OTPState *otp;
+    Bcm2838ThermalState *thermal;   /* BCM2711 only */
 
     MACAddr macaddr;
     uint32_t board_rev;
