@@ -3279,7 +3279,11 @@ static void handle_sys(DisasContext *s, bool isread,
          * but allow this to be suppressed by the register definition
          * (usually only necessary to work around guest bugs).
          */
-        need_exit_tb = true;
+        if (ri->type & ARM_CP_WRITE_NO_IRQ) {
+            s->base.is_jmp = DISAS_UPDATE_NOCHAIN;
+        } else {
+            need_exit_tb = true;
+        }
     }
     if (need_exit_tb) {
         s->base.is_jmp = DISAS_UPDATE_EXIT;

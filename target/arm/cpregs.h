@@ -154,6 +154,11 @@ enum {
      * ARM pseudocode function CheckFPMREnabled().
      */
     ARM_CP_FPMR                  = 1 << 23,
+    /*
+     * Flag: a write cannot make a pending interrupt deliverable, so the TB
+     * it ends may go on to the next TB without returning to the main loop.
+     */
+    ARM_CP_WRITE_NO_IRQ          = 1 << 24,
 };
 
 /*

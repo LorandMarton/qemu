@@ -1988,7 +1988,11 @@ static void do_coproc_insn(DisasContext *s, int cpnum, int is64,
          * but allow this to be suppressed by the register definition
          * (usually only necessary to work around guest bugs).
          */
-        need_exit_tb = true;
+        if (ri->type & ARM_CP_WRITE_NO_IRQ) {
+            s->base.is_jmp = DISAS_UPDATE_NOCHAIN;
+        } else {
+            need_exit_tb = true;
+        }
     }
     if (need_exit_tb) {
         gen_lookup_tb(s);
