@@ -7,19 +7,23 @@
  *
  * Multi-block transfers: what CMD25 wrote, with a CMD23 count or ended by
  * CMD12, is in the image file when the transfer ends, also beyond the
- * size of one host I/O; CMD18 reads it back.
+ * size of one host I/O; CMD18 reads it back. With Auto CMD23 the
+ * controller sends the count, so the transfer ends without CMD12.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bitops.h"
 #include "qemu/bswap.h"
 #include "qemu/units.h"
 #include "libqtest.h"
 #include "libqos/sdhci-cmd.h"
 
 #define EMMC2           0xfe340000
+#define SDHC_ARGUMENT2  0x00
 #define SDHC_PWRCON     0x29
+#define SDHC_TRNS_ACMD23 0x0008
 
 #define RSP_NONE        0
 #define RSP_136         1
@@ -164,24 +168,33 @@ static void file_read(int fd, uint32_t blk, uint8_t *buf, int n)
                     n * 512);
 }
 
+/* the image file on EMMC2, the card selected */
+static QTestState *emmc_file_init(int *fd, char **path)
+{
+    g_autofree char *drive = NULL;
+    QTestState *qts;
+
+    *fd = g_file_open_tmp("qtest-emmc2-XXXXXX.img", path, NULL);
+    g_assert_cmpint(*fd, >=, 0);
+    g_assert_cmpint(ftruncate(*fd, EMMC_SIZE + 2 * BOOT_SIZE), ==, 0);
+    drive = g_strdup_printf("-blockdev file,node-name=d0,filename=%s", *path);
+    qts = emmc_start(drive, "");
+    emmc_cmd(qts, 2, 0, RSP_136);
+    emmc_cmd(qts, 3, EMMC_RCA << 16, RSP_48);
+    emmc_cmd(qts, 7, EMMC_RCA << 16, RSP_48_BUSY);
+    return qts;
+}
+
 static void test_multi_block(void)
 {
     const int big = 1040;   /* 520 KiB, more than one host I/O */
     g_autofree char *path = NULL;
-    g_autofree char *drive = NULL;
     g_autofree uint8_t *wr = g_malloc(big * 512);
     g_autofree uint8_t *rd = g_malloc(big * 512);
     QTestState *qts;
     int fd;
 
-    fd = g_file_open_tmp("qtest-emmc2-XXXXXX.img", &path, NULL);
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, EMMC_SIZE + 2 * BOOT_SIZE), ==, 0);
-    drive = g_strdup_printf("-blockdev file,node-name=d0,filename=%s", path);
-    qts = emmc_start(drive, "");
-    emmc_cmd(qts, 2, 0, RSP_136);
-    emmc_cmd(qts, 3, EMMC_RCA << 16, RSP_48);
-    emmc_cmd(qts, 7, EMMC_RCA << 16, RSP_48_BUSY);
+    qts = emmc_file_init(&fd, &path);
 
     /* 8 blocks counted by CMD23: in the file when the count is reached */
     fill(wr, 8 * 512, 1);
@@ -205,6 +218,37 @@ static void test_multi_block(void)
     emmc_write(qts, 2000, wr, big, false);
     file_read(fd, 2000, rd, big);
     g_assert_cmpmem(rd, big * 512, wr, big * 512);
+
+    qtest_quit(qts);
+    close(fd);
+    unlink(path);
+}
+
+static void test_auto_cmd23(void)
+{
+    g_autofree char *path = NULL;
+    uint8_t wr[8 * 512], rd[8 * 512];
+    QTestState *qts;
+    uint32_t status;
+    int fd;
+
+    qts = emmc_file_init(&fd, &path);
+    fill(wr, sizeof(wr), 4);
+    qtest_writel(qts, EMMC2 + SDHC_ARGUMENT2, 8);
+    sdhci_cmd_regs(qts, EMMC2, 512, 8, 300 * 512,
+                   SDHC_TRNS_MULTI | SDHC_TRNS_BLK_CNT_EN | SDHC_TRNS_WRITE |
+                   SDHC_TRNS_ACMD23,
+                   25 << 8 | SDHC_CMD_DATA_PRESENT | RSP_48);
+    for (int i = 0; i < sizeof(wr); i += 4) {
+        qtest_writel(qts, EMMC2 + SDHC_BDATA, ldl_le_p(&wr[i]));
+    }
+
+    /* the card had the count: the blocks are written, it is in tran */
+    file_read(fd, 300, rd, 8);
+    g_assert_cmpmem(rd, sizeof(rd), wr, sizeof(wr));
+    emmc_cmd(qts, 13, EMMC_RCA << 16, RSP_48);
+    status = qtest_readl(qts, EMMC2 + SDHC_RSPREG0);
+    g_assert_cmpuint(extract32(status, 9, 4), ==, 4);
 
     qtest_quit(qts);
     close(fd);
@@ -251,5 +295,6 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/bcm2838-emmc2/identity", test_identity);
     qtest_add_func("/bcm2838-emmc2/multi-block", test_multi_block);
+    qtest_add_func("/bcm2838-emmc2/auto-cmd23", test_auto_cmd23);
     return g_test_run();
 }

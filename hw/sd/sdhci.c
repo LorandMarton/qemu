@@ -364,6 +364,20 @@ static void sdhci_send_command(SDHCIState *s)
     request.cmd = s->cmdreg >> 8;
     request.arg = s->argument;
 
+    if ((s->trnmod & (SDHC_TRNS_ACMD23 | SDHC_TRNS_MULTI)) ==
+        (SDHC_TRNS_ACMD23 | SDHC_TRNS_MULTI) &&
+        (s->cmdreg & SDHC_CMD_DATA_PRESENT)) {
+        /*
+         * Auto CMD23 (since v3): SET_BLOCK_COUNT goes out ahead of the
+         * multiple-block command, its argument in Argument 2 (the SDMA
+         * system address register).
+         */
+        SDRequest sbc = { .cmd = 23, .arg = s->sdmasysad };
+
+        trace_sdhci_send_command(sbc.cmd, sbc.arg);
+        sdbus_do_command(&s->sdbus, &sbc, response, sizeof(response));
+    }
+
     trace_sdhci_send_command(request.cmd, request.arg);
     rlen = sdbus_do_command(&s->sdbus, &request, response, sizeof(response));
 
@@ -1324,7 +1338,9 @@ sdhci_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
             mask |= 0xffff;
         }
 
-        MASKED_WRITE(s->trnmod, mask, value & SDHC_TRNMOD_MASK);
+        /* Auto CMD23 Enable is defined from v3 on */
+        MASKED_WRITE(s->trnmod, mask, value & (SDHC_TRNMOD_MASK |
+                     (s->sd_spec_version >= 3 ? SDHC_TRNS_ACMD23 : 0)));
         MASKED_WRITE(s->cmdreg, mask >> 16, value >> 16);
 
         /* Writing to the upper byte of CMDREG triggers SD command generation */
