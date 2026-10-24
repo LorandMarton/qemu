@@ -21,6 +21,14 @@ class Aarch64MigrationTest(MigrationTest):
         self.set_machine('quanta-gsj')
         self.migration_with_exec()
 
+    def test_migration_raspi4b(self):
+        self.set_machine('raspi4b')
+        self.migration_with_unix()
+
+    def test_migration_raspicm4(self):
+        self.set_machine('raspicm4')
+        self.migration_with_unix()
+
 
 if __name__ == '__main__':
     MigrationTest.main()
