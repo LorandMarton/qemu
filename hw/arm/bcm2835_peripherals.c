@@ -154,7 +154,7 @@ static void raspi_peripherals_base_init(Object *obj)
     object_initialize_child(obj, "dwc2", &s->dwc2, TYPE_DWC2_USB);
 
     /* CPRMAN clock manager */
-    object_initialize_child(obj, "cprman", &s->cprman, TYPE_BCM2835_CPRMAN);
+    object_initialize_child(obj, "cprman", &s->cprman, bc->cprman_type);
 
     object_property_add_const_link(OBJECT(&s->dwc2), "dma-mr",
                                    OBJECT(&s->gpu_bus_mr));
@@ -535,6 +535,7 @@ static void bcm2835_peripherals_class_init(ObjectClass *oc, const void *data)
     BCMSocPeripheralBaseClass *bc = BCM_SOC_PERIPHERALS_BASE_CLASS(oc);
 
     bc->peri_size = 0x1000000;
+    bc->cprman_type = TYPE_BCM2835_CPRMAN;
     dc->realize = bcm2835_peripherals_realize;
 }
 

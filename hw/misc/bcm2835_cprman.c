@@ -56,7 +56,7 @@
 static void pll_reset(DeviceState *dev)
 {
     CprmanPllState *s = CPRMAN_PLL(dev);
-    const PLLResetInfo *info = &PLL_RESET_INFO[s->id];
+    const PLLResetInfo *info = s->reset_info;
 
     *s->reg_cm = info->cm;
     *s->reg_a2w_ctrl = info->a2w_ctrl;
@@ -155,7 +155,7 @@ static const TypeInfo cprman_pll_info = {
 static void pll_channel_reset(DeviceState *dev)
 {
     CprmanPllChannelState *s = CPRMAN_PLL_CHANNEL(dev);
-    const PLLChannelResetInfo *info = &PLL_CHANNEL_RESET_INFO[s->id];
+    const PLLChannelResetInfo *info = s->reset_info;
 
     *s->reg_a2w_ctrl = info->a2w_ctrl;
 }
@@ -325,7 +325,7 @@ static void clock_mux_src_update(void *opaque, ClockEvent event)
 static void clock_mux_reset(DeviceState *dev)
 {
     CprmanClockMuxState *clock = CPRMAN_CLOCK_MUX(dev);
-    const ClockMuxResetInfo *info = &CLOCK_MUX_RESET_INFO[clock->id];
+    const ClockMuxResetInfo *info = clock->reset_info;
 
     *clock->reg_ctl = info->cm_ctl;
     *clock->reg_div = info->cm_div;
@@ -591,6 +591,7 @@ static void cprman_write(void *opaque, hwaddr offset,
 
     case R_CM_GNRICCTL ... R_CM_SMIDIV:
     case R_CM_TCNTCNT ... R_CM_VECDIV:
+    case R_CM_DSI1ECTL ... R_CM_DSI1PDIV:
     case R_CM_PULSECTL ... R_CM_PULSEDIV:
     case R_CM_SDCCTL ... R_CM_ARMCTL:
     case R_CM_AVEOCTL ... R_CM_EMMCDIV:
@@ -793,24 +794,55 @@ static const Property cprman_properties[] = {
 static void cprman_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    BCM2835CprmanClass *cc = CPRMAN_CLASS(klass);
 
     dc->realize = cprman_realize;
     device_class_set_legacy_reset(dc, cprman_reset);
     dc->vmsd = &cprman_vmstate;
     device_class_set_props(dc, cprman_properties);
+    cc->pll_reset = PLL_RESET_INFO;
+    cc->pll_channel_reset = PLL_CHANNEL_RESET_INFO;
+    cc->clock_mux_reset = CLOCK_MUX_RESET_INFO;
+    cc->pll_prediv = true;
+}
+
+/* The BCM2711 runs from a 54 MHz crystal */
+static void bcm2711_cprman_init(Object *obj)
+{
+    CPRMAN(obj)->xosc_freq = 54000000;
+}
+
+static void bcm2711_cprman_class_init(ObjectClass *klass, const void *data)
+{
+    BCM2835CprmanClass *cc = CPRMAN_CLASS(klass);
+
+    cc->pll_reset = PLL_RESET_INFO_BCM2711;
+    cc->pll_channel_reset = PLL_CHANNEL_RESET_INFO_BCM2711;
+    cc->clock_mux_reset = CLOCK_MUX_RESET_INFO_BCM2711;
+    /* Bits 14:13 of ANA1 select the VCO range instead */
+    cc->pll_prediv = false;
 }
 
 static const TypeInfo cprman_info = {
     .name = TYPE_BCM2835_CPRMAN,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(BCM2835CprmanState),
+    .class_size = sizeof(BCM2835CprmanClass),
     .class_init = cprman_class_init,
     .instance_init = cprman_init,
+};
+
+static const TypeInfo bcm2711_cprman_info = {
+    .name = TYPE_BCM2711_CPRMAN,
+    .parent = TYPE_BCM2835_CPRMAN,
+    .class_init = bcm2711_cprman_class_init,
+    .instance_init = bcm2711_cprman_init,
 };
 
 static void cprman_register_types(void)
 {
     type_register_static(&cprman_info);
+    type_register_static(&bcm2711_cprman_info);
     type_register_static(&cprman_pll_info);
     type_register_static(&cprman_pll_channel_info);
     type_register_static(&cprman_clock_mux_info);

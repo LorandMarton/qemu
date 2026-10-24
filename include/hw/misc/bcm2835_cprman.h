@@ -13,11 +13,13 @@
 #include "hw/core/qdev-clock.h"
 
 #define TYPE_BCM2835_CPRMAN "bcm2835-cprman"
+#define TYPE_BCM2711_CPRMAN "bcm2711-cprman"
 
 typedef struct BCM2835CprmanState BCM2835CprmanState;
+typedef struct BCM2835CprmanClass BCM2835CprmanClass;
 
-DECLARE_INSTANCE_CHECKER(BCM2835CprmanState, CPRMAN,
-                         TYPE_BCM2835_CPRMAN)
+DECLARE_OBJ_CHECKERS(BCM2835CprmanState, BCM2835CprmanClass, CPRMAN,
+                     TYPE_BCM2835_CPRMAN)
 
 #define CPRMAN_NUM_REGS (0x2000 / sizeof(uint32_t))
 
@@ -98,6 +100,8 @@ typedef enum CprmanClockMux {
     CPRMAN_CLOCK_AVEO,
     CPRMAN_CLOCK_EMMC,
     CPRMAN_CLOCK_EMMC2,
+    CPRMAN_CLOCK_DSI1E,
+    CPRMAN_CLOCK_DSI1P,
 
     CPRMAN_NUM_CLOCK_MUX
 } CprmanClockMux;
@@ -129,6 +133,7 @@ typedef struct CprmanPllState {
     uint32_t *reg_a2w_ana; /* ANA[0] .. ANA[3] */
     uint32_t prediv_mask; /* prediv bit in ana[1] */
     uint32_t *reg_a2w_frac;
+    const struct PLLResetInfo *reset_info;
 
     Clock *xosc_in;
     Clock *out;
@@ -147,6 +152,7 @@ typedef struct CprmanPllChannelState {
     uint32_t load_mask;
     uint32_t *reg_a2w_ctrl;
     int fixed_divider;
+    const struct PLLChannelResetInfo *reset_info;
 
     Clock *pll_in;
     Clock *out;
@@ -163,6 +169,7 @@ typedef struct CprmanClockMuxState {
     uint32_t *reg_div;
     int int_bits;
     int frac_bits;
+    const struct ClockMuxResetInfo *reset_info;
 
     Clock *srcs[CPRMAN_NUM_CLOCK_MUX_SRC];
     Clock *out;
@@ -205,6 +212,21 @@ struct BCM2835CprmanState {
 
     Clock *xosc;
     Clock *gnd;
+};
+
+/*
+ * The SoC variants differ in the state the firmware leaves the clocks in,
+ * which is the state at reset here, and in the PLL feedback pre-divider.
+ */
+struct BCM2835CprmanClass {
+    /*< private >*/
+    SysBusDeviceClass parent_class;
+
+    /*< public >*/
+    const struct PLLResetInfo *pll_reset;
+    const struct PLLChannelResetInfo *pll_channel_reset;
+    const struct ClockMuxResetInfo *clock_mux_reset;
+    bool pll_prediv; /* the PLLs have the pre-divider (not BCM2711) */
 };
 
 #endif

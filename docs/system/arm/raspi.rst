@@ -48,3 +48,11 @@ Missing devices
  * Pulse Width Modulation (PWM)
  * PCIe MSI/MSI-X interrupt delivery (raspi4b) -- INTx works; a PCIe
    device that only signals via MSI/MSI-X needs ``msi=off,msix=off``
+
+Board interfaces
+----------------
+
+The BCM2711 clock manager runs from a 54 MHz crystal and comes out of reset
+in the state the firmware leaves it for the kernel on a Compute Module 4
+(the ARM at 600 MHz, the PL011 UARTs at 48 MHz, EMMC2 at 100 MHz), so the
+rates Linux computes from its registers are the ones the devices run at.

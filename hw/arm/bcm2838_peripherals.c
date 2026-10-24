@@ -278,6 +278,7 @@ static void bcm2838_peripherals_class_init(ObjectClass *oc, const void *data)
 
     bc->peri_low_size = 0x2000000;
     bc_base->peri_size = 0x1800000;
+    bc_base->cprman_type = TYPE_BCM2711_CPRMAN;
     dc->realize = bcm2838_peripherals_realize;
 }
 

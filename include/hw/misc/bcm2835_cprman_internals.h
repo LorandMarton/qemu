@@ -206,6 +206,10 @@ REG32(CM_UARTCTL, 0x0f0)
 REG32(CM_UARTDIV, 0x0f4)
 REG32(CM_VECCTL, 0x0f8)
 REG32(CM_VECDIV, 0x0fc)
+REG32(CM_DSI1ECTL, 0x158)
+REG32(CM_DSI1EDIV, 0x15c)
+REG32(CM_DSI1PCTL, 0x160)
+REG32(CM_DSI1PDIV, 0x164)
 REG32(CM_PULSECTL, 0x190)
 REG32(CM_PULSEDIV, 0x194)
 REG32(CM_SDCCTL, 0x1a8)
@@ -237,6 +241,27 @@ FIELD(CPRMAN, PASSWORD, 24, 8)
 #define CPRMAN_PASSWORD 0x5a
 
 /* PLL init info */
+/* Object reset info: the state at reset, see the tables at the end */
+typedef struct PLLResetInfo {
+    uint32_t cm;
+    uint32_t a2w_ctrl;
+    uint32_t a2w_ana[4];
+    uint32_t a2w_frac;
+} PLLResetInfo;
+
+typedef struct PLLChannelResetInfo {
+    /*
+     * Even though a PLL channel has a CM register, it shares it with its
+     * parent PLL. The parent already takes care of the reset value.
+     */
+    uint32_t a2w_ctrl;
+} PLLChannelResetInfo;
+
+typedef struct ClockMuxResetInfo {
+    uint32_t cm_ctl;
+    uint32_t cm_div;
+} ClockMuxResetInfo;
+
 typedef struct PLLInitInfo {
     const char *name;
     size_t cm_offset;
@@ -290,8 +315,10 @@ static inline void set_pll_init_info(BCM2835CprmanState *s,
     pll->reg_cm = &s->regs[PLL_INIT_INFO[id].cm_offset];
     pll->reg_a2w_ctrl = &s->regs[PLL_INIT_INFO[id].a2w_ctrl_offset];
     pll->reg_a2w_ana = &s->regs[PLL_INIT_INFO[id].a2w_ana_offset];
-    pll->prediv_mask = PLL_INIT_INFO[id].prediv_mask;
+    pll->prediv_mask = CPRMAN_GET_CLASS(s)->pll_prediv ?
+                       PLL_INIT_INFO[id].prediv_mask : 0;
     pll->reg_a2w_frac = &s->regs[PLL_INIT_INFO[id].a2w_frac_offset];
+    pll->reset_info = &CPRMAN_GET_CLASS(s)->pll_reset[id];
 }
 
 
@@ -410,6 +437,7 @@ static inline void set_pll_channel_init_info(BCM2835CprmanState *s,
     channel->load_mask = PLL_CHANNEL_INIT_INFO[id].cm_load_mask;
     channel->reg_a2w_ctrl = &s->regs[PLL_CHANNEL_INIT_INFO[id].a2w_ctrl_offset];
     channel->fixed_divider = PLL_CHANNEL_INIT_INFO[id].fixed_divider;
+    channel->reset_info = &CPRMAN_GET_CLASS(s)->pll_channel_reset[id];
 }
 
 /* Clock mux init info */
@@ -725,6 +753,18 @@ static ClockMuxInitInfo CLOCK_MUX_INIT_INFO[] = {
         .frac_bits = 8,
         FILL_CLOCK_MUX_INIT_INFO(EMMC2, unknown),
     },
+    [CPRMAN_CLOCK_DSI1E] = {
+        .name = "dsi1e",
+        .int_bits = 4,
+        .frac_bits = 8,
+        FILL_CLOCK_MUX_INIT_INFO(DSI1E, dsi1),
+    },
+    [CPRMAN_CLOCK_DSI1P] = {
+        .name = "dsi1p",
+        .int_bits = 0,
+        .frac_bits = 0,
+        FILL_CLOCK_MUX_INIT_INFO(DSI1P, dsi1),
+    },
 };
 
 #undef FILL_CLOCK_MUX_INIT_INFO
@@ -745,6 +785,7 @@ static inline void set_clock_mux_init_info(BCM2835CprmanState *s,
     mux->reg_div = &s->regs[CLOCK_MUX_INIT_INFO[id].cm_offset + 1];
     mux->int_bits = CLOCK_MUX_INIT_INFO[id].int_bits;
     mux->frac_bits = CLOCK_MUX_INIT_INFO[id].frac_bits;
+    mux->reset_info = &CPRMAN_GET_CLASS(s)->clock_mux_reset[id];
 }
 
 
@@ -753,12 +794,6 @@ static inline void set_clock_mux_init_info(BCM2835CprmanState *s,
  * Those values have been dumped from a Raspberry Pi 3 Model B v1.2 using the
  * clk debugfs interface in Linux.
  */
-typedef struct PLLResetInfo {
-    uint32_t cm;
-    uint32_t a2w_ctrl;
-    uint32_t a2w_ana[4];
-    uint32_t a2w_frac;
-} PLLResetInfo;
 
 static const PLLResetInfo PLL_RESET_INFO[] = {
     [CPRMAN_PLLA] = {
@@ -798,13 +833,6 @@ static const PLLResetInfo PLL_RESET_INFO[] = {
     }
 };
 
-typedef struct PLLChannelResetInfo {
-    /*
-     * Even though a PLL channel has a CM register, it shares it with its
-     * parent PLL. The parent already takes care of the reset value.
-     */
-    uint32_t a2w_ctrl;
-} PLLChannelResetInfo;
 
 static const PLLChannelResetInfo PLL_CHANNEL_RESET_INFO[] = {
     [CPRMAN_PLLA_CHANNEL_DSI0] = { .a2w_ctrl = 0x00000100 },
@@ -829,10 +857,6 @@ static const PLLChannelResetInfo PLL_CHANNEL_RESET_INFO[] = {
     [CPRMAN_PLLB_CHANNEL_ARM] = { .a2w_ctrl = 0x00000000 }, /* unknown */
 };
 
-typedef struct ClockMuxResetInfo {
-    uint32_t cm_ctl;
-    uint32_t cm_div;
-} ClockMuxResetInfo;
 
 static const ClockMuxResetInfo CLOCK_MUX_RESET_INFO[] = {
     [CPRMAN_CLOCK_GNRIC] = {
@@ -1014,6 +1038,95 @@ static const ClockMuxResetInfo CLOCK_MUX_RESET_INFO[] = {
         .cm_ctl = 0, /* unknown */
         .cm_div = 0
     },
+
+    [CPRMAN_CLOCK_DSI1E] = {
+        .cm_ctl = 0, /* unknown */
+        .cm_div = 0
+    },
+
+    [CPRMAN_CLOCK_DSI1P] = {
+        .cm_ctl = 0, /* unknown */
+        .cm_div = 0
+    },
+};
+
+/*
+ * BCM2711: the state the firmware leaves for the kernel, dumped with the clk
+ * debugfs interface of Linux from a Compute Module 4 with the ARM at 600 MHz.
+ * The clocks the BCM2711 does not have read 0x636d ("cm"). The others are 0.
+ * H264 and ISP: divider 1, the 500 MHz Linux reads at boot; the registers
+ * of the running CM4 read divider 2, set by the firmware after boot.
+ */
+static const PLLResetInfo PLL_RESET_INFO_BCM2711[] = {
+    [CPRMAN_PLLA] = {
+        .cm = 0x00000000,
+        .a2w_ctrl = 0x00021037,
+        .a2w_frac = 0x0008e38e,
+        .a2w_ana = { 0x00000000, 0x0011c000, 0x00d04000, 0x00000052 }
+    },
+    [CPRMAN_PLLC] = {
+        .cm = 0x00000000,
+        .a2w_ctrl = 0x00021030,
+        .a2w_frac = 0x00000000,
+        .a2w_ana = { 0x00000000, 0x0011c000, 0x00d04000, 0x00000052 }
+    },
+    [CPRMAN_PLLD] = {
+        .cm = 0x00000000,
+        .a2w_ctrl = 0x00021037,
+        .a2w_frac = 0x0008e390,
+        .a2w_ana = { 0x00000000, 0x00118000, 0x00d00000, 0x00000052 }
+    },
+    [CPRMAN_PLLB] = {
+        .cm = 0x00000000,
+        .a2w_ctrl = 0x00021021,
+        .a2w_frac = 0x00055555,
+        .a2w_ana = { 0x00000000, 0x0011c000, 0x00d04000, 0x00000052 }
+    },
+};
+
+static const PLLChannelResetInfo PLL_CHANNEL_RESET_INFO_BCM2711[] = {
+    [CPRMAN_PLLA_CHANNEL_DSI0] = { .a2w_ctrl = 0x00000000 },
+    [CPRMAN_PLLA_CHANNEL_CORE] = { .a2w_ctrl = 0x00000006 },
+    [CPRMAN_PLLA_CHANNEL_CCP2] = { .a2w_ctrl = 0x00000000 },
+    [CPRMAN_PLLC_CHANNEL_CORE2] = { .a2w_ctrl = 0x00000000 },
+    [CPRMAN_PLLC_CHANNEL_CORE1] = { .a2w_ctrl = 0x00000000 },
+    [CPRMAN_PLLC_CHANNEL_PER] = { .a2w_ctrl = 0x00000004 },
+    [CPRMAN_PLLC_CHANNEL_CORE0] = { .a2w_ctrl = 0x00000000 },
+    [CPRMAN_PLLD_CHANNEL_DSI0] = { .a2w_ctrl = 0x00000000 },
+    [CPRMAN_PLLD_CHANNEL_CORE] = { .a2w_ctrl = 0x00000005 },
+    [CPRMAN_PLLD_CHANNEL_PER] = { .a2w_ctrl = 0x00000004 },
+    [CPRMAN_PLLD_CHANNEL_DSI1] = { .a2w_ctrl = 0x00000000 },
+    [CPRMAN_PLLB_CHANNEL_ARM] = { .a2w_ctrl = 0x00000003 },
+};
+
+static const ClockMuxResetInfo CLOCK_MUX_RESET_INFO_BCM2711[] = {
+    [CPRMAN_CLOCK_VPU] = { .cm_ctl = 0x00000254, .cm_div = 0x00001000 },
+    [CPRMAN_CLOCK_H264] = { .cm_ctl = 0x00000244, .cm_div = 0x00001000 },
+    [CPRMAN_CLOCK_ISP] = { .cm_ctl = 0x00000244, .cm_div = 0x00001000 },
+    [CPRMAN_CLOCK_CAM0] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_CAM1] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_DSI0E] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_DSI0P] = { .cm_ctl = 0x00000000, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_DPI] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_GP0] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_GP1] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_GP2] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_HSM] = { .cm_ctl = 0x0000636d, .cm_div = 0x0000636d },
+    [CPRMAN_CLOCK_OTP] = { .cm_ctl = 0x00000091, .cm_div = 0x00004000 },
+    [CPRMAN_CLOCK_PCM] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_PWM] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_SLIM] = { .cm_ctl = 0x0000636d, .cm_div = 0x0000636d },
+    [CPRMAN_CLOCK_SMI] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_TEC] = { .cm_ctl = 0x00000000, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_TSENS] = { .cm_ctl = 0x00000091, .cm_div = 0x00010000 },
+    [CPRMAN_CLOCK_TIMER] = { .cm_ctl = 0x00000291, .cm_div = 0x00036000 },
+    [CPRMAN_CLOCK_UART] = { .cm_ctl = 0x00000296, .cm_div = 0x0000fa00 },
+    [CPRMAN_CLOCK_SDC] = { .cm_ctl = 0x0000636d, .cm_div = 0x0000636d },
+    [CPRMAN_CLOCK_AVEO] = { .cm_ctl = 0x0000636d, .cm_div = 0x0000636d },
+    [CPRMAN_CLOCK_EMMC] = { .cm_ctl = 0x00000296, .cm_div = 0x00003000 },
+    [CPRMAN_CLOCK_EMMC2] = { .cm_ctl = 0x00000296, .cm_div = 0x00007800 },
+    [CPRMAN_CLOCK_DSI1E] = { .cm_ctl = 0x00000200, .cm_div = 0x00000000 },
+    [CPRMAN_CLOCK_DSI1P] = { .cm_ctl = 0x00000098, .cm_div = 0x00000000 },
 };
 
 #endif

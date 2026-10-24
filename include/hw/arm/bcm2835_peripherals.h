@@ -89,6 +89,7 @@ struct BCMSocPeripheralBaseClass {
     SysBusDeviceClass parent_class;
     /*< public >*/
     uint64_t peri_size; /* Peripheral range size */
+    const char *cprman_type; /* the SoC's clock manager */
 };
 
 struct BCM2835PeripheralState {
