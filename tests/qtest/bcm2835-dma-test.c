@@ -20,15 +20,27 @@
 #define BCM2708_DMA_CS         0
 #define BCM2708_DMA_ACTIVE     (1 << 0)
 #define BCM2708_DMA_INT        (1 << 2)
+#define BCM2708_DMA_ISPAUSED   (1 << 4)
+#define BCM2708_DMA_ISHELD     (1 << 5)
+#define BCM2708_DMA_ABORT      (1 << 30)
+#define BCM2708_DMA_RESET      (1u << 31)
 
 #define BCM2708_DMA_ADDR       0x04
+
+#define BCM2708_DMA_NEXTCB     0x1c
+#define BCM2708_DMA_DEBUG      0x20
+#define BCM2708_DMA_DEBUG_LITE (1 << 28)
 
 #define BCM2708_DMA_INT_STATUS 0xfe0
 
 /* DMA Transfer Info fields: */
 #define BCM2708_DMA_INT_EN     (1 << 0)
 #define BCM2708_DMA_D_INC      (1 << 4)
+#define BCM2708_DMA_D_DREQ     (1 << 6)
 #define BCM2708_DMA_S_INC      (1 << 8)
+#define BCM2708_DMA_S_DREQ     (1 << 10)
+#define BCM2708_DMA_PERMAP(n)  ((n) << 16)
+#define BCM2708_DMA_END        (1 << 1)
 
 /* Interrupt controller registers: */
 #define IRQ_PENDING_BASIC      0x00
@@ -105,12 +117,142 @@ static void bcm2835_dma_test_interrupts(void)
     bcm2835_dma_test_interrupt(14, 11);
 }
 
+/*
+ * A peripheral whose model does not drive its DREQ (11, the EMMC
+ * controller): the transfer runs unpaced, as the guest driver expects.
+ */
+static void bcm2835_dma_test_unpaced_dreq(void)
+{
+    uint64_t dma_base = RASPI3_DMA_BASE + 2 * 0x100;
+
+    writel(SCB_ADDR + 0, BCM2708_DMA_S_INC | BCM2708_DMA_D_INC |
+                         BCM2708_DMA_S_DREQ | BCM2708_DMA_PERMAP(11));
+    writel(SCB_ADDR + 4, S_ADDR);
+    writel(SCB_ADDR + 8, D_ADDR);
+    writel(SCB_ADDR + 12, TXFR_LEN);
+    writel(SCB_ADDR + 20, 0);
+    writel(dma_base + BCM2708_DMA_ADDR, SCB_ADDR);
+    for (int word = S_ADDR; word < S_ADDR + TXFR_LEN; word += 4) {
+        writel(word, check_data + word);
+    }
+    writel(dma_base + BCM2708_DMA_CS, BCM2708_DMA_ACTIVE);
+
+    g_assert_cmphex(readl(dma_base + BCM2708_DMA_CS) &
+                    (BCM2708_DMA_ACTIVE | BCM2708_DMA_END), ==,
+                    BCM2708_DMA_END);
+    for (int word = 0; word < TXFR_LEN; word += 4) {
+        g_assert_cmphex(readl(D_ADDR + word), ==, check_data + S_ADDR + word);
+    }
+}
+
+/* Channels 7 to 14 are lite channels; Linux tells them by DEBUG.LITE */
+static void bcm2835_dma_test_lite(void)
+{
+    for (int c = 0; c < 15; c++) {
+        uint32_t debug = readl(RASPI3_DMA_BASE + c * 0x100 + BCM2708_DMA_DEBUG);
+
+        g_assert_cmpint(!!(debug & BCM2708_DMA_DEBUG_LITE), ==,
+                        c >= 7 && c <= 14);
+    }
+}
+
+/*
+ * DREQ pacing with a peripheral that drives its DREQ (6, as dreq-inputs
+ * says): the channel is held while DREQ is low, can be paused there and
+ * its NEXTCONBK changed, and resumes; ABORT ends the current control block
+ * and goes on with the next. The paced block has a byte length (10): the
+ * last access is two bytes.
+ */
+#define PACED_DMA       (RASPI3_DMA_BASE + 3 * 0x100)
+#define CB1             0x1000
+#define CB2             0x1020
+#define SRC1            0x1100
+#define DST1            0x1200
+#define SRC2            0x1300
+#define DST2            0x1400
+#define DMA_PATH        "/machine/soc/peripherals/dma"
+
+static void paced_setup(QTestState *qts)
+{
+    qtest_writel(qts, CB1 + 0, BCM2708_DMA_S_INC | BCM2708_DMA_D_INC |
+                               BCM2708_DMA_D_DREQ | BCM2708_DMA_PERMAP(6));
+    qtest_writel(qts, CB1 + 4, SRC1);
+    qtest_writel(qts, CB1 + 8, DST1);
+    qtest_writel(qts, CB1 + 12, 10);
+    qtest_writel(qts, CB1 + 20, CB2);
+    qtest_writel(qts, CB2 + 0, BCM2708_DMA_S_INC | BCM2708_DMA_D_INC);
+    qtest_writel(qts, CB2 + 4, SRC2);
+    qtest_writel(qts, CB2 + 8, DST2);
+    qtest_writel(qts, CB2 + 12, 4);
+    qtest_writel(qts, CB2 + 20, 0);
+    for (int i = 0; i < 3; i++) {
+        qtest_writel(qts, SRC1 + i * 4, 0x11111111 * (i + 1));
+        qtest_writel(qts, DST1 + i * 4, 0xffffffff);
+    }
+    qtest_writel(qts, SRC2, 0xcafe0000);
+    qtest_writel(qts, DST2, 0xffffffff);
+    qtest_set_irq_in(qts, DMA_PATH, "dreq", 6, 0);
+    qtest_writel(qts, PACED_DMA + BCM2708_DMA_CS, BCM2708_DMA_RESET);
+    qtest_writel(qts, PACED_DMA + BCM2708_DMA_ADDR, CB1);
+    qtest_writel(qts, PACED_DMA + BCM2708_DMA_CS, BCM2708_DMA_ACTIVE);
+}
+
+static uint32_t paced_cs(QTestState *qts)
+{
+    return qtest_readl(qts, PACED_DMA + BCM2708_DMA_CS) &
+           (BCM2708_DMA_ACTIVE | BCM2708_DMA_END | BCM2708_DMA_ISPAUSED |
+            BCM2708_DMA_ISHELD);
+}
+
+static void bcm2835_dma_test_paced(void)
+{
+    QTestState *qts = qtest_init("-machine raspi3b "
+                                 "-global bcm2835-dma.dreq-inputs=0x40");
+
+    /* DREQ low: held, nothing moved */
+    paced_setup(qts);
+    g_assert_cmphex(paced_cs(qts), ==,
+                    BCM2708_DMA_ACTIVE | BCM2708_DMA_ISHELD);
+    g_assert_cmphex(qtest_readl(qts, DST1), ==, 0xffffffff);
+
+    /* Paused, it does not run on DREQ; the next CB is now none */
+    qtest_writel(qts, PACED_DMA + BCM2708_DMA_CS, 0);
+    g_assert_cmphex(paced_cs(qts), ==, BCM2708_DMA_ISPAUSED);
+    qtest_writel(qts, PACED_DMA + BCM2708_DMA_NEXTCB, 0);
+    qtest_set_irq_in(qts, DMA_PATH, "dreq", 6, 1);
+    g_assert_cmphex(qtest_readl(qts, DST1), ==, 0xffffffff);
+
+    /* Resumed: 10 bytes, and the chain ends there */
+    qtest_writel(qts, PACED_DMA + BCM2708_DMA_CS, BCM2708_DMA_ACTIVE);
+    g_assert_cmphex(paced_cs(qts), ==, BCM2708_DMA_END |
+                    BCM2708_DMA_ISPAUSED);
+    g_assert_cmphex(qtest_readl(qts, DST1), ==, 0x11111111);
+    g_assert_cmphex(qtest_readl(qts, DST1 + 4), ==, 0x22222222);
+    g_assert_cmphex(qtest_readl(qts, DST1 + 8), ==, 0xffff3333);
+    g_assert_cmphex(qtest_readl(qts, DST2), ==, 0xffffffff);
+
+    /* ABORT while held: CB1 is dropped, CB2 runs */
+    paced_setup(qts);
+    qtest_writel(qts, PACED_DMA + BCM2708_DMA_CS,
+                 BCM2708_DMA_ACTIVE | BCM2708_DMA_ABORT);
+    g_assert_cmphex(paced_cs(qts), ==, BCM2708_DMA_END |
+                    BCM2708_DMA_ISPAUSED);
+    g_assert_cmphex(qtest_readl(qts, DST1), ==, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, DST2), ==, 0xcafe0000);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/bcm2835/dma/test_interrupts",
                    bcm2835_dma_test_interrupts);
+    qtest_add_func("/bcm2835/dma/unpaced_dreq",
+                   bcm2835_dma_test_unpaced_dreq);
+    qtest_add_func("/bcm2835/dma/lite", bcm2835_dma_test_lite);
+    qtest_add_func("/bcm2835/dma/paced", bcm2835_dma_test_paced);
     qtest_start("-machine raspi3b");
     ret = g_test_run();
     qtest_end();

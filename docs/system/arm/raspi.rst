@@ -23,7 +23,7 @@ Implemented devices
 
  * ARM1176JZF-S, Cortex-A7, Cortex-A53 or Cortex-A72 CPU
  * Interrupt controller
- * DMA controller
+ * DMA controller, with DREQ pacing for SPI0
  * Clock and reset controller (CPRMAN)
  * System Timer
  * GPIO controller

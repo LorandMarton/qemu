@@ -22,6 +22,11 @@ typedef struct {
     uint32_t nextconbk;
     uint32_t debug;
 
+    /* the control block in progress: none when ylen is 0 */
+    uint32_t xlen;      /* bytes left in the row */
+    uint32_t ylen;      /* rows left, the current one included */
+    uint32_t row_len;   /* XLENGTH, in 2D mode */
+
     qemu_irq irq;
 } BCM2835DMAChan;
 
@@ -29,6 +34,7 @@ typedef struct {
 OBJECT_DECLARE_SIMPLE_TYPE(BCM2835DMAState, BCM2835_DMA)
 
 #define BCM2835_DMA_NCHANS 16
+#define BCM2835_DMA_NDREQS 32
 
 struct BCM2835DMAState {
     /*< private >*/
@@ -42,6 +48,9 @@ struct BCM2835DMAState {
     BCM2835DMAChan chan[BCM2835_DMA_NCHANS];
     uint32_t int_status;
     uint32_t enable;
+    uint32_t dreq;      /* the peripherals' DREQ lines (PERMAP), bit 0 unused */
+    uint32_t dreq_inputs; /* the lines a peripheral model drives */
+    QEMUBH *bh;
 };
 
 #endif
