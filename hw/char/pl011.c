@@ -377,6 +377,41 @@ static void pl011_trace_baudrate_change(const PL011State *s)
                                 s->ibrd, s->fbrd);
 }
 
+/*
+ * Pass the line settings and RTS/DTR to a host serial port
+ * (-chardev serial); other backends ignore the ioctls.
+ */
+#define LCR_PEN     (1 << 1)
+#define LCR_EPS     (1 << 2)
+#define LCR_STP2    (1 << 3)
+
+static void pl011_update_params(PL011State *s)
+{
+    QEMUSerialSetParams ssp;
+    unsigned int baud = pl011_get_baudrate(s);
+
+    if (!baud) {
+        return;
+    }
+    ssp.speed = baud;
+    ssp.parity = !(s->lcr & LCR_PEN) ? 'N' : (s->lcr & LCR_EPS) ? 'E' : 'O';
+    ssp.data_bits = 5 + extract32(s->lcr, 5, 2);
+    ssp.stop_bits = (s->lcr & LCR_STP2) ? 2 : 1;
+    qemu_chr_fe_ioctl(&s->chr, CHR_IOCTL_SERIAL_SET_PARAMS, &ssp);
+}
+
+static void pl011_update_mctrl(PL011State *s)
+{
+    int flags = 0;
+
+    if (s->cr & CR_LBE) {
+        return;
+    }
+    flags |= (s->cr & CR_RTS) ? CHR_TIOCM_RTS : 0;
+    flags |= (s->cr & CR_DTR) ? CHR_TIOCM_DTR : 0;
+    qemu_chr_fe_ioctl(&s->chr, CHR_IOCTL_SERIAL_SET_TIOCM, &flags);
+}
+
 static void pl011_loopback_mdmctrl(PL011State *s)
 {
     uint32_t cr, fr, il;
@@ -473,12 +508,17 @@ static void pl011_write(void *opaque, hwaddr offset,
         }
         s->lcr = value;
         pl011_set_read_trigger(s);
+        pl011_update_params(s);
         break;
     case 12: /* UARTCR */
         /* ??? Need to implement the enable bit.  */
         if ((s->cr ^ value) & CR_UARTEN) {
             /* Re-arm the log warning when the guest toggles UARTEN */
             s->logged_disabled_uart = false;
+        }
+        if ((s->cr ^ value) & (CR_RTS | CR_DTR | CR_LBE)) {
+            s->cr = value;
+            pl011_update_mctrl(s);
         }
         s->cr = value;
         pl011_loopback_mdmctrl(s);
