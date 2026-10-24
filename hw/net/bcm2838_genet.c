@@ -60,6 +60,9 @@ REG32(GENET_INTRL_1,              0)
 FIELD(GENET_INTRL_1, TX_INTRS,    0, 16)
 FIELD(GENET_INTRL_1, RX_INTRS,    16, 16)
 
+REG32(GENET_HFB_CTRL,       0)
+FIELD(GENET_HFB_CTRL, EN,   0, 1)
+
 REG32(GENET_UMAC_CMD,                  0)
 FIELD(GENET_UMAC_CMD, TX_EN,           0, 1)
 FIELD(GENET_UMAC_CMD, RX_EN,           1, 1)
@@ -789,20 +792,61 @@ static const MemoryRegionOps bcm2838_genet_ops = {
     .valid = {.min_access_size = 4, .max_access_size = 4},
 };
 
+/*
+ * Hardware Filter Block. Each filter is a pattern of 16-bit words: bits
+ * 15:8 and 7:0 are two bytes of the frame, bits 19:16 say which of their
+ * nibbles must match (19: high nibble of the first byte, ... 16: low
+ * nibble of the second). The length of a filter is in bytes.
+ */
+static bool bcm2838_genet_filter_match(BCM2838GenetState *s, unsigned f,
+                                       const uint8_t *buf, size_t size)
+{
+    const uint32_t *flt = &s->regs.hfb.flt[f * BCM2838_GENET_HFB_FILTER_SIZE];
+    unsigned last = BCM2838_GENET_HFB_FILTER_CNT - 1;
+    uint32_t len = extract32(s->regs.hfb.flt_len[(last - f) / 4],
+                             8 * (f % 4), 8);
+    size_t i;
+
+    if (!len || size < len) {
+        return false;
+    }
+    for (i = 0; i < len; i++) {
+        uint32_t word = flt[i / 2];
+        unsigned shift = i & 1 ? 0 : 8;
+        unsigned nibbles = extract32(word, 16 + (i & 1 ? 0 : 2), 2);
+        uint8_t mask = (nibbles & 2 ? 0xf0 : 0) | (nibbles & 1 ? 0x0f : 0);
+
+        if ((buf[i] ^ (word >> shift)) & mask) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The first enabled filter that matches the frame, or -1 */
 static int32_t bcm2838_genet_filter(BCM2838GenetState *s, const void *buf,
                                     size_t size)
 {
-    qemu_log_mask(LOG_UNIMP,
-                  "Packet filtration with HFB isn't implemented yet");
+    unsigned f;
+
+    if (!FIELD_EX32(s->regs.hfb.ctrl, GENET_HFB_CTRL, EN)) {
+        return -1;
+    }
+    for (f = 0; f < BCM2838_GENET_HFB_FILTER_CNT; f++) {
+        /* filters 0-31 are enabled in the second register, 32-47 first */
+        if (extract32(s->regs.hfb.flt_enable[f < 32], f % 32, 1) &&
+            bcm2838_genet_filter_match(s, f, buf, size)) {
+            return f;
+        }
+    }
     return -1;
 }
 
 static int32_t bcm2838_genet_filter2ring(BCM2838GenetState *s,
                                          uint32_t filter_idx)
 {
-    qemu_log_mask(LOG_UNIMP,
-                  "Packet filtration with HFB isn't implemented yet");
-    return -1;
+    return extract32(s->regs.rdma.index2ring[filter_idx / 8],
+                     4 * (filter_idx % 8), 4);
 }
 
 static bool is_packet_broadcast(const uint8_t *buf, size_t size)
@@ -976,7 +1020,8 @@ static ssize_t bcm2838_genet_receive(NetClientState *nc, const uint8_t *buf,
 
         if (filter_index >= 0) {
             ring_index = bcm2838_genet_filter2ring(s, filter_index);
-        } else {
+        }
+        if (ring_index < 0 || !bcm2838_genet_rdma_ring_active(s, ring_index)) {
             ring_index = BCM2838_GENET_DMA_RING_CNT - 1;
             if (!bcm2838_genet_rdma_ring_active(s, ring_index)) {
                 for (ring_index = 0;
