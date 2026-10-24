@@ -633,6 +633,32 @@ int arm_load_dtb(hwaddr addr, const struct arm_boot_info *binfo,
         binfo->modify_dtb(binfo, fdt);
     }
 
+    if (binfo->dtb_below_initrd && binfo->dtb_argptr_lo) {
+        const void *p;
+        uint64_t initrd = 0;
+        int len;
+
+        p = qemu_fdt_getprop(fdt, "/chosen", "linux,initrd-start", &len, NULL);
+        if (p && len == 4) {
+            initrd = ldl_be_p(p);
+        } else if (p && len == 8) {
+            initrd = ldq_be_p(p);
+        }
+        if (initrd > fdt_totalsize(fdt)) {
+            uint32_t *word;
+
+            size = fdt_totalsize(fdt);
+            addr = QEMU_ALIGN_DOWN(initrd - size, 256);
+            /* The bootloader passes the DTB address to the kernel */
+            word = rom_ptr_for_as(as, binfo->dtb_argptr_lo, sizeof(*word));
+            *word = tswap32(addr);
+            if (binfo->dtb_argptr_hi) {
+                word = rom_ptr_for_as(as, binfo->dtb_argptr_hi, sizeof(*word));
+                *word = tswap32(addr >> 32);
+            }
+        }
+    }
+
     /* Put the DTB into the memory map as a ROM image: this will ensure
      * the DTB is copied again upon reset, even if addr points into RAM.
      */
@@ -1093,6 +1119,16 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
 
         arm_write_bootloader("bootloader", as, info->loader_start,
                              primary_loader, fixupcontext);
+        for (int i = 0; have_dtb(info) &&
+             primary_loader[i].fixup != FIXUP_TERMINATOR; i++) {
+            hwaddr word = info->loader_start + i * sizeof(uint32_t);
+
+            if (primary_loader[i].fixup == FIXUP_ARGPTR_LO) {
+                info->dtb_argptr_lo = word;
+            } else if (primary_loader[i].fixup == FIXUP_ARGPTR_HI) {
+                info->dtb_argptr_hi = word;
+            }
+        }
 
         if (info->write_board_setup) {
             info->write_board_setup(cpu, info);

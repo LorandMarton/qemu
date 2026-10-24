@@ -47,6 +47,16 @@ struct arm_boot_info {
     hwaddr loader_start;
     hwaddr dtb_start;
     hwaddr dtb_limit;
+    /*
+     * Place the DTB as the Raspberry Pi firmware does: just below the
+     * initramfs that /chosen linux,initrd-start names, its start aligned
+     * down to 256 bytes, without free space beyond its totalsize.  For a
+     * direct Linux boot with an initramfs; otherwise dtb_start applies.
+     */
+    bool dtb_below_initrd;
+    /* Used by dtb_below_initrd: the bootloader words holding the address */
+    hwaddr dtb_argptr_lo;
+    hwaddr dtb_argptr_hi;
     /* If set to True, arm_load_kernel() will not load DTB.
      * It allows board to load DTB manually later.
      * (default: False)

@@ -3,12 +3,14 @@
  *
  * raspicm4 as a CM4 Rev 1.0 8 GiB reports itself: the board revision and
  * the ARM memory below the VideoCore carve-out; the generic timer at the
- * 54 MHz crystal frequency.
+ * 54 MHz crystal frequency; the device tree just below the initrd, as the
+ * firmware passes it.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/units.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
@@ -69,6 +71,218 @@ static void test_cm4_identity(void)
     qtest_quit(qts);
 }
 
+/* A flattened device tree, built and read just enough for these tests */
+#define FDT_MAGIC           0xd00dfeed
+#define FDT_BEGIN_NODE      1
+#define FDT_END_NODE        2
+#define FDT_PROP            3
+#define FDT_NOP             4
+#define FDT_END             9
+#define FDT_HDR_SIZE        40
+#define FDT_RSV_SIZE        16
+
+static void fdt_u32(GByteArray *b, uint32_t v)
+{
+    v = cpu_to_be32(v);
+    g_byte_array_append(b, (uint8_t *)&v, 4);
+}
+
+static void fdt_pad(GByteArray *b)
+{
+    static const uint8_t zero[4];
+
+    g_byte_array_append(b, zero, -b->len & 3);
+}
+
+static void fdt_node(GByteArray *b, const char *name)
+{
+    fdt_u32(b, FDT_BEGIN_NODE);
+    g_byte_array_append(b, (const uint8_t *)name, strlen(name) + 1);
+    fdt_pad(b);
+}
+
+static void fdt_prop(GByteArray *b, GString *strings, const char *name,
+                     const void *val, uint32_t len)
+{
+    fdt_u32(b, FDT_PROP);
+    fdt_u32(b, len);
+    fdt_u32(b, strings->len);
+    g_string_append_len(strings, name, strlen(name) + 1);
+    g_byte_array_append(b, val, len);
+    fdt_pad(b);
+}
+
+static void fdt_prop_u32(GByteArray *b, GString *strings, const char *name,
+                         uint32_t v)
+{
+    v = cpu_to_be32(v);
+    fdt_prop(b, strings, name, &v, 4);
+}
+
+/*
+ * The nodes the firmware's edits need, as in the BCM2711 trees: 2 address
+ * cells, 1 size cell, /chosen and /memory@0.
+ */
+static char *write_dtb(void)
+{
+    static const uint32_t reg[3] = { 0, 0, 0 };
+    g_autoptr(GByteArray) st = g_byte_array_new();
+    g_autoptr(GByteArray) blob = g_byte_array_new();
+    g_autoptr(GString) strings = g_string_new(NULL);
+    char *path;
+    int fd;
+
+    fdt_node(st, "");
+    fdt_prop_u32(st, strings, "#address-cells", 2);
+    fdt_prop_u32(st, strings, "#size-cells", 1);
+    fdt_node(st, "chosen");
+    fdt_u32(st, FDT_END_NODE);
+    fdt_node(st, "memory@0");
+    fdt_prop(st, strings, "device_type", "memory", 7);
+    fdt_prop(st, strings, "reg", reg, sizeof(reg));
+    fdt_u32(st, FDT_END_NODE);
+    fdt_u32(st, FDT_END_NODE);
+    fdt_u32(st, FDT_END);
+
+    fdt_u32(blob, FDT_MAGIC);
+    fdt_u32(blob, FDT_HDR_SIZE + FDT_RSV_SIZE + st->len + strings->len);
+    fdt_u32(blob, FDT_HDR_SIZE + FDT_RSV_SIZE);
+    fdt_u32(blob, FDT_HDR_SIZE + FDT_RSV_SIZE + st->len);
+    fdt_u32(blob, FDT_HDR_SIZE);
+    fdt_u32(blob, 17);
+    fdt_u32(blob, 16);
+    fdt_u32(blob, 0);
+    fdt_u32(blob, strings->len);
+    fdt_u32(blob, st->len);
+    fdt_u32(blob, 0);
+    fdt_u32(blob, 0);
+    fdt_u32(blob, 0);
+    fdt_u32(blob, 0);
+    g_byte_array_append(blob, st->data, st->len);
+    g_byte_array_append(blob, (uint8_t *)strings->str, strings->len);
+
+    fd = g_file_open_tmp("raspi4-test-XXXXXX.dtb", &path, NULL);
+    g_assert(fd >= 0);
+    g_assert_cmpint(write(fd, blob->data, blob->len), ==, blob->len);
+    close(fd);
+    return path;
+}
+
+static uint32_t be32_at(const uint8_t *p)
+{
+    return ldl_be_p(p);
+}
+
+/* The value of property NAME of node PATH ("/" or "/a/b"), or NULL */
+static const uint8_t *fdt_find(const uint8_t *fdt, const char *path,
+                               const char *name, uint32_t *len)
+{
+    const uint8_t *st = fdt + be32_at(fdt + 8);
+    const char *strings = (const char *)fdt + be32_at(fdt + 12);
+    g_autoptr(GString) cur = g_string_new(NULL);
+    gsize depth_len[16];
+    int depth = 0;
+    uint32_t off = 0;
+
+    for (;;) {
+        uint32_t tag = be32_at(st + off);
+
+        off += 4;
+        switch (tag) {
+        case FDT_BEGIN_NODE: {
+            const char *n = (const char *)st + off;
+
+            g_assert(depth < ARRAY_SIZE(depth_len));
+            depth_len[depth++] = cur->len;
+            if (depth > 1) {
+                g_string_append_printf(cur, "/%s", n);
+            }
+            off += ROUND_UP(strlen(n) + 1, 4);
+            break;
+        }
+        case FDT_END_NODE:
+            g_string_truncate(cur, depth_len[--depth]);
+            break;
+        case FDT_PROP: {
+            uint32_t l = be32_at(st + off);
+            const char *n = strings + be32_at(st + off + 4);
+
+            if (!strcmp(cur->len ? cur->str : "/", path) && !strcmp(n, name)) {
+                *len = l;
+                return st + off + 8;
+            }
+            off += 8 + ROUND_UP(l, 4);
+            break;
+        }
+        case FDT_NOP:
+            break;
+        default:
+            g_assert_cmpuint(tag, ==, FDT_END);
+            return NULL;
+        }
+    }
+}
+
+static uint64_t fdt_cells(const uint8_t *p, int cells)
+{
+    return cells == 2 ? (uint64_t)be32_at(p) << 32 | be32_at(p + 4)
+                      : be32_at(p);
+}
+
+static char *write_file(const char *pattern, size_t size)
+{
+    g_autofree uint8_t *data = g_malloc0(size);
+    char *path;
+    int fd = g_file_open_tmp(pattern, &path, NULL);
+
+    g_assert(fd >= 0);
+    g_assert_cmpint(write(fd, data, size), ==, size);
+    close(fd);
+    return path;
+}
+
+
+/* The tree in guest memory just below the initrd, at a 256-byte boundary */
+static void test_cm4_dtb(void)
+{
+    g_autofree char *dtb = write_dtb();
+    g_autofree char *kernel = write_file("raspi4-test-XXXXXX.kernel", 4096);
+    g_autofree char *initrd = write_file("raspi4-test-XXXXXX.initrd", 65536);
+    g_autofree char *dump = g_strdup_printf("%s.dump", dtb);
+    g_autofree uint8_t *mem = NULL;
+    g_autofree gchar *fdt = NULL;
+    const uint8_t *p;
+    uint64_t initrd_start, dtb_addr;
+    uint32_t len = 0, totalsize;
+    gsize size;
+    QTestState *qts;
+    QDict *rsp;
+
+    qts = qtest_initf("-M raspicm4 -kernel %s -initrd %s -dtb %s",
+                      kernel, initrd, dtb);
+    rsp = qtest_qmp(qts, "{ 'execute': 'dumpdtb', "
+                    "'arguments': { 'filename': %s } }", dump);
+    g_assert(qdict_haskey(rsp, "return"));
+    qobject_unref(rsp);
+    g_assert(g_file_get_contents(dump, &fdt, &size, NULL));
+    totalsize = be32_at((uint8_t *)fdt + 4);
+    g_assert_cmpuint(totalsize, <=, size);
+
+    p = fdt_find((uint8_t *)fdt, "/chosen", "linux,initrd-start", &len);
+    g_assert_nonnull(p);
+    initrd_start = fdt_cells(p, len / 4);
+    dtb_addr = (initrd_start - totalsize) & ~0xffull;
+    mem = g_malloc(totalsize);
+    qtest_memread(qts, dtb_addr, mem, totalsize);
+    g_assert(memcmp(mem, fdt, totalsize) == 0);
+
+    qtest_quit(qts);
+    unlink(dump);
+    unlink(dtb);
+    unlink(kernel);
+    unlink(initrd);
+}
+
 static void test_cntfrq(const void *machine)
 {
     QTestState *qts = qtest_initf("-M %s", (const char *)machine);
@@ -89,6 +303,7 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/raspi4/cm4/identity", test_cm4_identity);
+    qtest_add_func("/raspi4/cm4/dtb", test_cm4_dtb);
     qtest_add_data_func("/raspi4/raspi4b/cntfrq", "raspi4b", test_cntfrq);
     qtest_add_data_func("/raspi4/raspicm4/cntfrq", "raspicm4", test_cntfrq);
     return g_test_run();
