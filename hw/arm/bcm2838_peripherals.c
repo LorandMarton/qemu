@@ -66,7 +66,10 @@ static void bcm2838_peripherals_init(Object *obj)
         g_autofree char *name = g_strdup_printf("uart%d", i + 2);
 
         object_initialize_child(obj, name, &s->uarts[i], TYPE_PL011);
+        qdev_prop_set_bit(DEVICE(&s->uarts[i]), "has-cts", true);
     }
+    /* UART0 (created by the common code): CTS from the GPIO pin mux */
+    qdev_prop_set_bit(DEVICE(&s_base->uart0), "has-cts", true);
     object_initialize_child(obj, "uart_irq_orgate", &s->uart_irq_orgate,
                             TYPE_OR_IRQ);
     object_property_set_int(OBJECT(&s->uart_irq_orgate), "num-lines",

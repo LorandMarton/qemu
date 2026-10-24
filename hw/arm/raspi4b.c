@@ -155,12 +155,32 @@ static void raspi4b_machine_init(MachineState *machine)
  * Compute Module 4: as the 4B, with the RAM size of the board revision
  * and the 76 MiB VideoCore carve-out of the default firmware config.
  */
+/*
+ * GPIO state as the CM4 firmware leaves it and the board holds it ("pinctrl
+ * get" on a CM4 on the CM4 IO Board): functions, pulls, and the
+ * levels the module's own parts drive (BT UART on 30-33, RGMII on 46/47,
+ * WiFi SDIO on 34-39, ACT LED on 42).
+ */
+static const char raspicm4_pins[] =
+    "0:ip:pu:hi,1:ip:pu:hi,2:ip:pu:hi,3:ip:pu:hi,4:a4:pn:hi,5:a4:pu:hi,"
+    "6:a4:pu:hi,7:a4:pn:hi,8:ip:pu:hi,9:ip:pd:lo,10:ip:pd:lo,11:ip:pd:lo,"
+    "12:ip:pd:lo,13:ip:pd:lo,14:a5:pn:hi,15:a5:pu:hi,16:ip:pd:lo,17:ip:pd:lo,"
+    "18:ip:pd:lo,19:ip:pd:lo,20:ip:pd:lo,21:ip:pd:lo,22:ip:pd:lo,23:ip:pd:lo,"
+    "24:ip:pd:lo,25:ip:pd:lo,26:ip:pn:hi,27:ip:pd:lo,28:a5:pu:hi,29:a5:pd:lo,"
+    "30:ip:pu:hi,31:ip:pn:hi,32:ip:pd:hi,33:ip:pd:hi,34:a3:pn:lo,35:a3:pu:hi,"
+    "36:a3:pu:hi,37:a3:pu:hi,38:a3:pu:hi,39:a3:pu:hi,40:ip:pn:hi,41:ip:pn:lo,"
+    "42:op:pn:lo,43:ip:pn:hi,44:a1:pn:hi,45:a1:pn:hi,46:ip:pu:lo,47:ip:pu:lo,"
+    "48:a0:pd:lo,49:a0:pd:lo,50:a0:pd:lo,51:a0:pd:lo,52:a0:pd:lo,53:a0:pd:lo,"
+    "54:ip:pd:lo,55:ip:pd:lo,56:ip:pd:lo,57:ip:pd:lo";
+
 static void raspicm4_machine_init(MachineState *machine)
 {
     Raspi4bMachineState *s = RASPI4B_MACHINE(machine);
     RaspiBaseMachineState *s_base = RASPI_BASE_MACHINE(machine);
     RaspiBaseMachineClass *mc = RASPI_BASE_MACHINE_GET_CLASS(machine);
     BCM2838State *soc = &s->soc;
+    g_autofree char *user_pins = NULL, *pins = NULL;
+    Object *gpio;
 
     s_base->binfo.modify_dtb = raspi4_fw_modify_dtb;
     s_base->binfo.dtb_below_initrd = true;
@@ -170,6 +190,12 @@ static void raspicm4_machine_init(MachineState *machine)
                             board_soc_type(mc->board_rev));
     object_property_set_uint(OBJECT(soc), "vcram-size", 76 * MiB,
                              &error_abort);
+    /* The board's pins, then the user's: later entries win */
+    gpio = OBJECT(&soc->peripherals.gpio);
+    user_pins = object_property_get_str(gpio, "pins", &error_abort);
+    pins = g_strjoin(",", raspicm4_pins, user_pins, NULL);
+    object_property_set_str(gpio, "pins", pins, &error_abort);
+
     raspi_base_machine_init(machine, &soc->parent_obj);
 }
 

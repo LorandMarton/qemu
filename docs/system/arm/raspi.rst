@@ -60,6 +60,30 @@ to UART5. With a host serial port backend (``-chardev serial``) the baud
 rate, data bits, parity, stop bits and the RTS and DTR lines programmed by
 the guest are applied to the host port.
 
+On ``raspi4b`` and ``raspicm4`` the CTS input of each UART follows the GPIO
+pin multiplexer: a UART whose CTS function is not selected on any pin sees
+CTS asserted, otherwise CTS is asserted while that pin is low. PL011 CTS
+hardware flow control (``UARTCR.CTSEN``) holds back transmission while CTS
+is deasserted.
+
+The BCM2711 GPIO pins can be driven from outside the SoC with the ``gpioN``
+properties of the GPIO controller, ``high``, ``low`` or ``none`` (released,
+the pin follows its pull); edge and level events and the GPIO interrupts
+follow the pin level. For example, from the monitor::
+
+  (qemu) qom-set /machine/soc/peripherals/gpio gpio26 low
+
+The ``pins`` property sets the state of the pins at reset, as ``pinctrl get``
+prints it: comma-separated ``PIN:FUNC:PULL:LEVEL`` entries, ``FUNC`` one of
+``ip``, ``op``, ``a0`` to ``a5``, ``PULL`` one of ``pu``, ``pd``, ``pn`` and
+``LEVEL`` ``hi`` or ``lo``. For an output ``LEVEL`` is the output latch; for
+any other pin a level its pull does not give is driven by the board. A later
+entry for a pin replaces an earlier one. ``raspicm4`` starts from the pin
+state its firmware leaves on a CM4 and applies the user's entries after it,
+for example the ``gpio=`` lines of ``config.txt``::
+
+  -global bcm2838-gpio.pins=19:op:pd:hi,20:ip:pu:hi
+
 The BCM2711 die temperature is the ``temperature`` property of the thermal
 sensor, in millidegrees Celsius (25000 by default; the range the 10-bit
 sensor code covers, -88161 to 410040); the guest reads the nearest code, and

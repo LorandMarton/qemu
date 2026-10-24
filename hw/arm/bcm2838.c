@@ -191,6 +191,23 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
     qdev_connect_gpio_out(DEVICE(&ps->uart_irq_orgate), 0,
                           qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_UART0));
 
+    /* CTS of UART0, the mini UART and UART2..UART5 from the pin mux */
+    qdev_connect_gpio_out_named(DEVICE(&ps->gpio), "uart-cts", 0,
+            qdev_get_gpio_in_named(DEVICE(&ps_base->uart0), "cts", 0));
+    qdev_connect_gpio_out_named(DEVICE(&ps->gpio), "uart-cts", 1,
+            qdev_get_gpio_in_named(DEVICE(&ps_base->aux), "cts", 0));
+    for (int i = 0; i < BCM2838_NUM_EXTRA_UARTS; i++) {
+        qdev_connect_gpio_out_named(DEVICE(&ps->gpio), "uart-cts", 2 + i,
+                qdev_get_gpio_in_named(DEVICE(&ps->uarts[i]), "cts", 0));
+    }
+
+    /* GPIO banks 0-2 and "any bank" */
+    for (int i = 0; i < BCM2838_GPIO_NUM_IRQS; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ps->gpio), i,
+                           qdev_get_gpio_in(gicdev,
+                                            GIC_SPI_INTERRUPT_GPIO_0 + i));
+    }
+
 
     /* Connect AUX / UART1 to the interrupt controller */
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->aux), 0,

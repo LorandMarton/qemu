@@ -12,6 +12,8 @@
  *
  * UART2..UART5: 0x200 apart, on -serial 3..6, on UART0's interrupt.
  *
+ * CTS of the PL011s and the mini UART from the GPIO pin mux.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -20,8 +22,19 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 
+#define GPIO_BASE       0xfe200000
+#define GPFSEL0         0x00
+#define GPIO_PUP_PDN0   0xe4
+#define GPIO_PATH       "/machine/soc/peripherals/gpio"
+
+#define FSEL_INPUT      0
+#define FSEL_ALT4       3
+#define FSEL_ALT5       2
+#define PULL_UP         1
+
 #define UART0           0xfe201000
 #define UART2           0xfe201400
+#define UART3           0xfe201600
 #define UART_STRIDE     0x200
 #define UARTDR          0x00
 #define UARTFR          0x18
@@ -145,6 +158,109 @@ static void test_cts_flow_control(void)
     qtest_quit(qts);
 }
 
+static void set_fsel(QTestState *qts, int pin, uint32_t fsel)
+{
+    uint32_t reg = GPIO_BASE + GPFSEL0 + (pin / 10) * 4;
+
+    qtest_writel(qts, reg,
+                 deposit32(qtest_readl(qts, reg), (pin % 10) * 3, 3, fsel));
+}
+
+static void set_pull(QTestState *qts, int pin, uint32_t pull)
+{
+    uint32_t reg = GPIO_BASE + GPIO_PUP_PDN0 + (pin / 16) * 4;
+
+    qtest_writel(qts, reg,
+                 deposit32(qtest_readl(qts, reg), (pin % 16) * 2, 2, pull));
+}
+
+static void set_drive(QTestState *qts, int pin, const char *value)
+{
+    g_autofree char *prop = g_strdup_printf("gpio%d", pin);
+    QDict *resp;
+
+    resp = qtest_qmp(qts, "{ 'execute': 'qom-set', 'arguments': "
+                     "{ 'path': %s, 'property': %s, 'value': %s } }",
+                     GPIO_PATH, prop, value);
+    g_assert(qdict_haskey(resp, "return"));
+    qobject_unref(resp);
+}
+
+static void test_pl011_cts_unrouted(void)
+{
+    QTestState *qts = uart_init();
+
+    /* No pin carries CTS0 or CTS3: CTS reads asserted */
+    g_assert_cmphex(qtest_readl(qts, UART0 + UARTFR) & FR_CTS, ==, FR_CTS);
+    g_assert_cmphex(qtest_readl(qts, UART3 + UARTFR) & FR_CTS, ==, FR_CTS);
+
+    qtest_quit(qts);
+}
+
+static void test_pl011_cts_pin(void)
+{
+    QTestState *qts = uart_init();
+
+    /* GPIO6 ALT4 is CTS3 (nCTS, active low), pulled up: deasserted */
+    set_pull(qts, 6, PULL_UP);
+    set_fsel(qts, 6, FSEL_ALT4);
+    g_assert_cmphex(qtest_readl(qts, UART3 + UARTFR) & FR_CTS, ==, 0);
+    qtest_writel(qts, UART3 + UARTICR, INT_CTS);
+
+    set_drive(qts, 6, "low");
+    g_assert_cmphex(qtest_readl(qts, UART3 + UARTFR) & FR_CTS, ==, FR_CTS);
+    g_assert_cmphex(qtest_readl(qts, UART3 + UARTRIS) & INT_CTS, ==,
+                    INT_CTS);
+
+    /* UART0 is not affected */
+    set_drive(qts, 6, "high");
+    g_assert_cmphex(qtest_readl(qts, UART3 + UARTFR) & FR_CTS, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, UART0 + UARTFR) & FR_CTS, ==, FR_CTS);
+
+    /* Back to GPIO input: the UART no longer sees the pin */
+    set_fsel(qts, 6, FSEL_INPUT);
+    g_assert_cmphex(qtest_readl(qts, UART3 + UARTFR) & FR_CTS, ==, FR_CTS);
+
+    qtest_quit(qts);
+}
+
+static void test_pl011_ctsen(void)
+{
+    QTestState *qts = uart_init();
+    g_autofree char *out1 = NULL;
+    g_autofree char *out2 = NULL;
+    g_autofree char *out3 = NULL;
+
+    set_pull(qts, 6, PULL_UP);
+    set_fsel(qts, 6, FSEL_ALT4);
+    qtest_writel(qts, UART3 + UARTLCR_H, LCR_FEN | LCR_WLEN(8));
+    qtest_writel(qts, UART3 + UARTCR, CR_UART_ON | CR_CTSEN);
+
+    /* CTS deasserted: the bytes wait in the TX FIFO */
+    qtest_writel(qts, UART3 + UARTDR, 'o');
+    qtest_writel(qts, UART3 + UARTDR, 'k');
+    g_assert_cmphex(qtest_readl(qts, UART3 + UARTFR) &
+                    (FR_TXFE | FR_BUSY), ==, FR_BUSY);
+    out1 = ringbuf_read(qts, "u3");
+    g_assert_cmpstr(out1, ==, "");
+
+    /* CTS asserted: they go out */
+    set_drive(qts, 6, "low");
+    out2 = ringbuf_read(qts, "u3");
+    g_assert_cmpstr(out2, ==, "ok");
+    g_assert_cmphex(qtest_readl(qts, UART3 + UARTFR) &
+                    (FR_TXFE | FR_BUSY), ==, FR_TXFE);
+
+    /* Without CTSEN the CTS level does not matter */
+    set_drive(qts, 6, "high");
+    qtest_writel(qts, UART3 + UARTCR, CR_UART_ON);
+    qtest_writel(qts, UART3 + UARTDR, '!');
+    out3 = ringbuf_read(qts, "u3");
+    g_assert_cmpstr(out3, ==, "!");
+
+    qtest_quit(qts);
+}
+
 static bool uart_irq_pending(QTestState *qts)
 {
     uint32_t reg = GICD + GICD_ISPENDR + UART_IRQ_ID / 32 * 4;
@@ -207,6 +323,24 @@ static void test_aux_dlab(void)
     qtest_writel(qts, AUX_BASE + AUX_MU_IO, 'x');
     out2 = ringbuf_read(qts, "mu");
     g_assert_cmpstr(out2, ==, "x");
+
+    qtest_quit(qts);
+}
+
+static void test_aux_cts(void)
+{
+    QTestState *qts = uart_init();
+
+    g_assert_cmphex(qtest_readl(qts, AUX_BASE + AUX_MU_MSR), ==, MU_MSR_CTS);
+    g_assert_cmphex(qtest_readl(qts, AUX_BASE + AUX_MU_STAT) & MU_STAT_CTS,
+                    ==, MU_STAT_CTS);
+
+    /* GPIO16 ALT5 is CTS1, pulled up: deasserted */
+    set_pull(qts, 16, PULL_UP);
+    set_fsel(qts, 16, FSEL_ALT5);
+    g_assert_cmphex(qtest_readl(qts, AUX_BASE + AUX_MU_MSR), ==, 0);
+    set_drive(qts, 16, "low");
+    g_assert_cmphex(qtest_readl(qts, AUX_BASE + AUX_MU_MSR), ==, MU_MSR_CTS);
 
     qtest_quit(qts);
 }
@@ -310,5 +444,10 @@ int main(int argc, char **argv)
                    test_cts_flow_control);
     qtest_add_func("/bcm2838-uart/aux/dlab", test_aux_dlab);
     qtest_add_func("/bcm2838-uart/extra-uarts", test_extra_uarts);
+    qtest_add_func("/bcm2838-uart/pl011/cts-unrouted",
+                   test_pl011_cts_unrouted);
+    qtest_add_func("/bcm2838-uart/pl011/cts-pin", test_pl011_cts_pin);
+    qtest_add_func("/bcm2838-uart/pl011/ctsen", test_pl011_ctsen);
+    qtest_add_func("/bcm2838-uart/aux/cts", test_aux_cts);
     return g_test_run();
 }

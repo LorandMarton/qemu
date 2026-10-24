@@ -15,11 +15,14 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "hw/sd/sd.h"
 #include "hw/gpio/bcm2838_gpio.h"
 #include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "qemu/cutils.h"
 
 #define GPFSEL0   0x00
 #define GPFSEL1   0x04
@@ -87,6 +90,8 @@ static uint32_t gpfsel_get(BCM2838GpioState *s, uint8_t reg)
     return value;
 }
 
+static void gpio_sd_route(BCM2838GpioState *s);
+
 static void gpfsel_set(BCM2838GpioState *s, uint8_t reg, uint32_t value)
 {
     int i;
@@ -97,31 +102,373 @@ static void gpfsel_set(BCM2838GpioState *s, uint8_t reg, uint32_t value)
             s->fsel[index] = fsel;
         }
     }
+    gpio_sd_route(s);
+}
 
-    /* SD controller selection (48-53) */
-    if (s->sd_fsel != BCM2838_FSEL_GPIO_IN
-        && (s->fsel[48] == BCM2838_FSEL_GPIO_IN)
-        && (s->fsel[49] == BCM2838_FSEL_GPIO_IN)
-        && (s->fsel[50] == BCM2838_FSEL_GPIO_IN)
-        && (s->fsel[51] == BCM2838_FSEL_GPIO_IN)
-        && (s->fsel[52] == BCM2838_FSEL_GPIO_IN)
-        && (s->fsel[53] == BCM2838_FSEL_GPIO_IN)
-       ) {
-        /* SDHCI controller selected */
-        sdbus_reparent_card(s->sdbus_sdhost, s->sdbus_sdhci);
-        s->sd_fsel = BCM2838_FSEL_GPIO_IN;
-    } else if (s->sd_fsel != BCM2838_FSEL_ALT0
-               && (s->fsel[48] == BCM2838_FSEL_ALT0) /* SD_CLK_R */
-               && (s->fsel[49] == BCM2838_FSEL_ALT0) /* SD_CMD_R */
-               && (s->fsel[50] == BCM2838_FSEL_ALT0) /* SD_DATA0_R */
-               && (s->fsel[51] == BCM2838_FSEL_ALT0) /* SD_DATA1_R */
-               && (s->fsel[52] == BCM2838_FSEL_ALT0) /* SD_DATA2_R */
-               && (s->fsel[53] == BCM2838_FSEL_ALT0) /* SD_DATA3_R */
-              ) {
-        /* SDHost controller selected */
-        sdbus_reparent_card(s->sdbus_sdhci, s->sdbus_sdhost);
-        s->sd_fsel = BCM2838_FSEL_ALT0;
+/* sd_fsel: where the card of pins 48-53 is; not on a controller */
+#define BCM2838_SD_UNROUTED     0xff
+
+static SDBus *gpio_sd_bus(BCM2838GpioState *s, uint8_t sd_fsel)
+{
+    switch (sd_fsel) {
+    case BCM2838_FSEL_GPIO_IN:
+        return s->sdbus_sdhci;
+    case BCM2838_FSEL_ALT0:
+        return s->sdbus_sdhost;
+    default:
+        return &s->sdbus;
     }
+}
+
+static bool gpio_sd_pins(BCM2838GpioState *s, uint8_t fsel)
+{
+    int i;
+
+    for (i = 48; i <= 53; i++) {
+        if (s->fsel[i] != fsel) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * The SD card on pins 48-53 is on the SDHost when they are in ALT0, on
+ * the SDHCI when they are inputs, unless SD1 is on pins 34-39 (ALT3, the
+ * wireless chip of the Raspberry Pi 4 and CM4) and so not on these pins.
+ * Only this card moves: the controllers may have cards of their own.
+ */
+static void gpio_sd_route(BCM2838GpioState *s)
+{
+    uint8_t sd_fsel = s->sd_fsel;
+
+    if (gpio_sd_pins(s, BCM2838_FSEL_GPIO_IN) &&
+        s->fsel[34] != BCM2838_FSEL_ALT3) {
+        sd_fsel = BCM2838_FSEL_GPIO_IN;
+    } else if (gpio_sd_pins(s, BCM2838_FSEL_ALT0)) {
+        sd_fsel = BCM2838_FSEL_ALT0;
+    }
+    if (sd_fsel != s->sd_fsel) {
+        sdbus_reparent_card(gpio_sd_bus(s, s->sd_fsel),
+                            gpio_sd_bus(s, sd_fsel));
+        s->sd_fsel = sd_fsel;
+    }
+}
+
+#define GPIO_EXT_LOW    0
+#define GPIO_EXT_HIGH   1
+#define GPIO_EXT_NONE   2
+
+#define GPIO_PULL_NONE  0
+#define GPIO_PULL_UP    1
+#define GPIO_PULL_DOWN  2
+
+#define GPIO_BANK0_MASK MAKE_64BIT_MASK(0, 28)
+#define GPIO_BANK1_MASK MAKE_64BIT_MASK(28, 18)
+#define GPIO_BANK2_MASK MAKE_64BIT_MASK(46, 12)
+#define GPIO_ALL_MASK   MAKE_64BIT_MASK(0, BCM2838_GPIO_NUM)
+
+static uint64_t gpio_word64(const uint32_t *w)
+{
+    return ((uint64_t)w[1] << 32 | w[0]) & GPIO_ALL_MASK;
+}
+
+static int gpio_pull(BCM2838GpioState *s, int pin)
+{
+    return extract32(s->pup_cntrl_reg[pin / 16], (pin % 16) * 2, 2);
+}
+
+/*
+ * SPI chip enables (BCM2711 alternate functions), CE0 and CE1 of SPI0 and
+ * SPI3..SPI6 in turn; the first pin of each is where the board's device is.
+ */
+static const struct {
+    uint8_t cs, pin, fsel;
+} gpio_spi_ce_pins[] = {
+    { 0, 8, BCM2838_FSEL_ALT0 }, { 0, 36, BCM2838_FSEL_ALT0 },
+    { 0, 43, BCM2838_FSEL_ALT4 }, { 0, 46, BCM2838_FSEL_ALT2 },
+    { 1, 7, BCM2838_FSEL_ALT0 }, { 1, 35, BCM2838_FSEL_ALT0 },
+    { 1, 44, BCM2838_FSEL_ALT4 },
+    { 2, 0, BCM2838_FSEL_ALT3 }, { 3, 24, BCM2838_FSEL_ALT5 },
+    { 4, 4, BCM2838_FSEL_ALT3 }, { 5, 25, BCM2838_FSEL_ALT5 },
+    { 6, 12, BCM2838_FSEL_ALT3 }, { 7, 26, BCM2838_FSEL_ALT5 },
+    { 8, 18, BCM2838_FSEL_ALT3 }, { 9, 27, BCM2838_FSEL_ALT5 },
+};
+
+/* the chip enable a pin outputs in its alternate function, or -1 */
+static int gpio_spi_ce(BCM2838GpioState *s, int pin)
+{
+    for (int i = 0; i < ARRAY_SIZE(gpio_spi_ce_pins); i++) {
+        if (gpio_spi_ce_pins[i].pin == pin &&
+            gpio_spi_ce_pins[i].fsel == s->fsel[pin]) {
+            return gpio_spi_ce_pins[i].cs;
+        }
+    }
+    return -1;
+}
+
+/*
+ * Pin level: the output latch for an output, the peripheral's output for
+ * an SPI chip enable, otherwise what drives the pin from outside (a
+ * peripheral's line, the board), otherwise its pull; an undriven pin
+ * without pull reads low.
+ */
+static uint64_t gpio_levels(BCM2838GpioState *s)
+{
+    uint64_t latch = (uint64_t)s->lev1 << 32 | s->lev0;
+    uint64_t level = 0;
+
+    for (int i = 0; i < BCM2838_GPIO_NUM; i++) {
+        int ce = gpio_spi_ce(s, i);
+        bool hi;
+
+        if (s->fsel[i] == BCM2838_FSEL_GPIO_OUT) {
+            hi = latch & BIT_ULL(i);
+        } else if (ce >= 0) {
+            hi = s->spi_ce & BIT(ce);
+        } else if (s->ext[i] != GPIO_EXT_NONE) {
+            hi = s->ext[i] == GPIO_EXT_HIGH;
+        } else {
+            hi = gpio_pull(s, i) == GPIO_PULL_UP;
+        }
+        level |= (uint64_t)hi << i;
+    }
+    return level;
+}
+
+static void gpio_update_irq(BCM2838GpioState *s)
+{
+    uint64_t eds = gpio_word64(s->eds);
+
+    qemu_set_irq(s->irq[0], !!(eds & GPIO_BANK0_MASK));
+    qemu_set_irq(s->irq[1], !!(eds & GPIO_BANK1_MASK));
+    qemu_set_irq(s->irq[2], !!(eds & GPIO_BANK2_MASK));
+    qemu_set_irq(s->irq[3], !!eds);
+}
+
+/*
+ * UART CTS inputs from the pin mux (BCM2711 alternate functions).
+ * A UART whose CTS function is on no pin sees CTS asserted; otherwise CTS
+ * is asserted while the pin is low (nCTS).
+ */
+static const struct {
+    uint8_t uart, pin, fsel;
+} gpio_cts_pins[] = {
+    { 0, 16, BCM2838_FSEL_ALT3 }, { 0, 30, BCM2838_FSEL_ALT3 },
+    { 0, 39, BCM2838_FSEL_ALT2 },
+    { 1, 16, BCM2838_FSEL_ALT5 }, { 1, 30, BCM2838_FSEL_ALT5 },
+    { 1, 43, BCM2838_FSEL_ALT5 },
+    { 2, 2, BCM2838_FSEL_ALT4 }, { 3, 6, BCM2838_FSEL_ALT4 },
+    { 4, 10, BCM2838_FSEL_ALT4 }, { 5, 14, BCM2838_FSEL_ALT4 },
+};
+
+static void gpio_update_uart_cts(BCM2838GpioState *s)
+{
+    bool cts[BCM2838_GPIO_NUM_UARTS];
+    bool routed[BCM2838_GPIO_NUM_UARTS] = { false };
+
+    for (int u = 0; u < BCM2838_GPIO_NUM_UARTS; u++) {
+        cts[u] = true;
+    }
+    for (int i = 0; i < ARRAY_SIZE(gpio_cts_pins); i++) {
+        int u = gpio_cts_pins[i].uart, pin = gpio_cts_pins[i].pin;
+
+        if (s->fsel[pin] == gpio_cts_pins[i].fsel && !routed[u]) {
+            routed[u] = true;
+            cts[u] = !(s->level & BIT_ULL(pin));
+        }
+    }
+    for (int u = 0; u < BCM2838_GPIO_NUM_UARTS; u++) {
+        qemu_set_irq(s->uart_cts[u], cts[u]);
+    }
+}
+
+/*
+ * A device's chip select follows its CE pin: the pin in the CE function if
+ * any, otherwise the first, as a GPIO (Linux "cs-gpios") or undriven.
+ */
+static void gpio_update_spi_cs(BCM2838GpioState *s)
+{
+    for (int cs = 0; cs < BCM2838_GPIO_NUM_SPI_CS; cs++) {
+        int pin = -1;
+
+        for (int i = 0; i < ARRAY_SIZE(gpio_spi_ce_pins); i++) {
+            int p = gpio_spi_ce_pins[i].pin;
+
+            if (gpio_spi_ce_pins[i].cs != cs) {
+                continue;
+            }
+            if (pin < 0) {
+                pin = p;
+            }
+            if (s->fsel[p] == gpio_spi_ce_pins[i].fsel) {
+                pin = p;
+                break;
+            }
+        }
+        qemu_set_irq(s->spi_cs[cs], !!(s->level & BIT_ULL(pin)));
+    }
+}
+
+/* Recompute the levels, latch edge and level events, update the IRQs */
+static void gpio_update(BCM2838GpioState *s)
+{
+    uint64_t old = s->level;
+    uint64_t new = gpio_levels(s);
+    uint64_t rise = (old ^ new) & new;
+    uint64_t fall = (old ^ new) & old;
+
+    s->level = new;
+    for (int w = 0; w < 2; w++) {
+        uint32_t r = rise >> (32 * w), f = fall >> (32 * w);
+        uint32_t l = new >> (32 * w);
+
+        s->eds[w] |= (r & (s->ren[w] | s->aren[w])) |
+                     (f & (s->fen[w] | s->afen[w])) |
+                     (l & s->hen[w]) | (~l & s->len[w]);
+    }
+    s->eds[1] &= GPIO_ALL_MASK >> 32;
+    gpio_update_irq(s);
+    gpio_update_uart_cts(s);
+    gpio_update_spi_cs(s);
+}
+
+/* An SPI controller's chip enable output, for its pin's CE function */
+static void gpio_spi_ce_set(void *opaque, int cs, int level)
+{
+    BCM2838GpioState *s = opaque;
+    uint32_t ce = deposit32(s->spi_ce, cs, 1, level != 0);
+
+    /* the controller drives its chip enables at every register access */
+    if (ce != s->spi_ce) {
+        s->spi_ce = ce;
+        gpio_update(s);
+    }
+}
+
+/* pinctrl level notation */
+static int gpio_parse_level(const char *v)
+{
+    if (!strcmp(v, "hi")) {
+        return GPIO_EXT_HIGH;
+    }
+    if (!strcmp(v, "lo")) {
+        return GPIO_EXT_LOW;
+    }
+    return -1;
+}
+
+/*
+ * "pins": the board state at reset, as "pinctrl get" prints it:
+ * comma-separated PIN:FUNC:PULL:LEVEL, FUNC ip|op|a0..a5, PULL pu|pd|pn,
+ * LEVEL hi|lo. For an output LEVEL is the latch; for anything else a
+ * level its pull does not give means the board drives the pin. FUNC, PULL
+ * and the latch are SoC state, restored by every reset; what the board
+ * drives is set once, at power-on.
+ */
+static bool gpio_parse_pins(BCM2838GpioState *s, Error **errp)
+{
+    static const char *const funcs[] = {
+        [BCM2838_FSEL_GPIO_IN] = "ip", [BCM2838_FSEL_GPIO_OUT] = "op",
+        [BCM2838_FSEL_ALT0] = "a0", [BCM2838_FSEL_ALT1] = "a1",
+        [BCM2838_FSEL_ALT2] = "a2", [BCM2838_FSEL_ALT3] = "a3",
+        [BCM2838_FSEL_ALT4] = "a4", [BCM2838_FSEL_ALT5] = "a5",
+    };
+    g_auto(GStrv) items = g_strsplit_set(s->pins, ", ", -1);
+
+    for (char **it = items; *it; it++) {
+        g_auto(GStrv) f = NULL;
+        uint64_t pin;
+        int fsel = -1, pull, lvl;
+
+        if (!**it) {
+            continue;
+        }
+        f = g_strsplit(*it, ":", 4);
+        if (g_strv_length(f) != 4 || qemu_strtou64(f[0], NULL, 10, &pin) ||
+            pin >= BCM2838_GPIO_NUM) {
+            goto bad;
+        }
+        for (int i = 0; i < ARRAY_SIZE(funcs); i++) {
+            if (!strcmp(f[1], funcs[i])) {
+                fsel = i;
+            }
+        }
+        pull = !strcmp(f[2], "pu") ? GPIO_PULL_UP :
+               !strcmp(f[2], "pd") ? GPIO_PULL_DOWN :
+               !strcmp(f[2], "pn") ? GPIO_PULL_NONE : -1;
+        lvl = gpio_parse_level(f[3]);
+        if (fsel < 0 || pull < 0 || lvl < 0) {
+            goto bad;
+        }
+        s->reset_fsel[pin] = fsel;
+        s->reset_pup[pin / 16] = deposit32(s->reset_pup[pin / 16],
+                                           (pin % 16) * 2, 2, pull);
+        if (fsel == BCM2838_FSEL_GPIO_OUT) {
+            s->reset_out = deposit64(s->reset_out, pin, 1, lvl);
+            s->ext[pin] = GPIO_EXT_NONE;
+        } else if ((pull == GPIO_PULL_UP && lvl == GPIO_EXT_HIGH) ||
+                   (pull == GPIO_PULL_DOWN && lvl == GPIO_EXT_LOW)) {
+            s->ext[pin] = GPIO_EXT_NONE;
+        } else {
+            s->ext[pin] = lvl;
+        }
+        continue;
+bad:
+        error_setg(errp, "bcm2838-gpio: bad pins entry '%s' "
+                   "(expected PIN:ip|op|a0..a5:pu|pd|pn:hi|lo)", *it);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * "gpioN" properties: what drives pin N from outside the SoC. "high" and
+ * "low" drive it (it reads that level unless it is an output), "none"
+ * leaves it to its pull.
+ */
+static const char *const gpio_drive_names[] = {
+    [GPIO_EXT_LOW] = "low",
+    [GPIO_EXT_HIGH] = "high",
+    [GPIO_EXT_NONE] = "none",
+};
+
+static void gpio_get_pin(Object *obj, Visitor *v, const char *name,
+                         void *opaque, Error **errp)
+{
+    BCM2838GpioState *s = BCM2838_GPIO(obj);
+    char *value = g_strdup(gpio_drive_names[s->ext[(uintptr_t)opaque]]);
+
+    visit_type_str(v, name, &value, errp);
+    g_free(value);
+}
+
+static void gpio_set_pin(Object *obj, Visitor *v, const char *name,
+                         void *opaque, Error **errp)
+{
+    BCM2838GpioState *s = BCM2838_GPIO(obj);
+    g_autofree char *value = NULL;
+
+    if (!visit_type_str(v, name, &value, errp)) {
+        return;
+    }
+    for (int i = 0; i < ARRAY_SIZE(gpio_drive_names); i++) {
+        if (!strcmp(value, gpio_drive_names[i])) {
+            s->ext[(uintptr_t)opaque] = i;
+            gpio_update(s);
+            return;
+        }
+    }
+    error_setg(errp, "%s: '%s' is not one of high, low, none", name, value);
+}
+
+/* qdev GPIO inputs: other devices driving a pin (level 0/1) */
+static void gpio_input_set(void *opaque, int pin, int level)
+{
+    BCM2838GpioState *s = opaque;
+
+    s->ext[pin] = level ? GPIO_EXT_HIGH : GPIO_EXT_LOW;
+    gpio_update(s);
 }
 
 static int gpfsel_is_out(BCM2838GpioState *s, int index)
@@ -191,28 +538,38 @@ static uint64_t bcm2838_gpio_read(void *opaque, hwaddr offset, unsigned size)
                       TYPE_BCM2838_GPIO, __func__, value, offset, size);
         break;
     case GPLEV0:
-        value = s->lev0;
+        value = (uint32_t)s->level;
         break;
     case GPLEV1:
-        value = s->lev1;
+        value = s->level >> 32;
         break;
     case GPEDS0:
     case GPEDS1:
+        value = s->eds[(offset - GPEDS0) / 4];
+        break;
     case GPREN0:
     case GPREN1:
+        value = s->ren[(offset - GPREN0) / 4];
+        break;
     case GPFEN0:
     case GPFEN1:
+        value = s->fen[(offset - GPFEN0) / 4];
+        break;
     case GPHEN0:
     case GPHEN1:
+        value = s->hen[(offset - GPHEN0) / 4];
+        break;
     case GPLEN0:
     case GPLEN1:
+        value = s->len[(offset - GPLEN0) / 4];
+        break;
     case GPAREN0:
     case GPAREN1:
+        value = s->aren[(offset - GPAREN0) / 4];
+        break;
     case GPAFEN0:
     case GPAFEN1:
-        /* Not implemented */
-        qemu_log_mask(LOG_UNIMP, "%s: %s: not implemented for %"HWADDR_PRIx"\n",
-                      TYPE_BCM2838_GPIO, __func__, offset);
+        value = s->afen[(offset - GPAFEN0) / 4];
         break;
     case GPIO_PUP_PDN_CNTRL_REG0:
     case GPIO_PUP_PDN_CNTRL_REG1:
@@ -243,18 +600,23 @@ static void bcm2838_gpio_write(void *opaque, hwaddr offset, uint64_t value,
     case GPFSEL4:
     case GPFSEL5:
         gpfsel_set(s, offset / BYTES_IN_WORD, value);
+        gpio_update(s);
         break;
     case GPSET0:
         gpset(s, value, 0, 32, &s->lev0);
+        gpio_update(s);
         break;
     case GPSET1:
-        gpset(s, value, 32, 22, &s->lev1);
+        gpset(s, value, 32, 26, &s->lev1);
+        gpio_update(s);
         break;
     case GPCLR0:
         gpclr(s, value, 0, 32, &s->lev0);
+        gpio_update(s);
         break;
     case GPCLR1:
-        gpclr(s, value, 32, 22, &s->lev1);
+        gpclr(s, value, 32, 26, &s->lev1);
+        gpio_update(s);
         break;
     case GPLEV0:
     case GPLEV1:
@@ -266,21 +628,35 @@ static void bcm2838_gpio_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case GPEDS0:
     case GPEDS1:
+        /* Write 1 to clear; a level event still present sets it again */
+        s->eds[(offset - GPEDS0) / 4] &= ~value;
+        gpio_update(s);
+        break;
     case GPREN0:
     case GPREN1:
+        s->ren[(offset - GPREN0) / 4] = value;
+        break;
     case GPFEN0:
     case GPFEN1:
+        s->fen[(offset - GPFEN0) / 4] = value;
+        break;
     case GPHEN0:
     case GPHEN1:
+        s->hen[(offset - GPHEN0) / 4] = value;
+        gpio_update(s);
+        break;
     case GPLEN0:
     case GPLEN1:
+        s->len[(offset - GPLEN0) / 4] = value;
+        gpio_update(s);
+        break;
     case GPAREN0:
     case GPAREN1:
+        s->aren[(offset - GPAREN0) / 4] = value;
+        break;
     case GPAFEN0:
     case GPAFEN1:
-        /* Not implemented */
-        qemu_log_mask(LOG_UNIMP, "%s: %s: not implemented for %"HWADDR_PRIx"\n",
-                      TYPE_BCM2838_GPIO, __func__, offset);
+        s->afen[(offset - GPAFEN0) / 4] = value;
         break;
     case GPIO_PUP_PDN_CNTRL_REG0:
     case GPIO_PUP_PDN_CNTRL_REG1:
@@ -288,6 +664,7 @@ static void bcm2838_gpio_write(void *opaque, hwaddr offset, uint64_t value,
     case GPIO_PUP_PDN_CNTRL_REG3:
         s->pup_cntrl_reg[(offset - GPIO_PUP_PDN_CNTRL_REG0)
                          / sizeof(s->pup_cntrl_reg[0])] = value;
+        gpio_update(s);
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset %"HWADDR_PRIx"\n",
@@ -301,20 +678,29 @@ static void bcm2838_gpio_reset(DeviceState *dev)
 
     memset(s->fsel, 0, sizeof(s->fsel));
 
-    s->sd_fsel = 0;
+    /* the pins select the controller of the card again */
+    sdbus_reparent_card(gpio_sd_bus(s, s->sd_fsel), &s->sdbus);
+    s->sd_fsel = BCM2838_SD_UNROUTED;
 
-    /* SDHCI is selected by default */
-    sdbus_reparent_card(&s->sdbus, s->sdbus_sdhci);
+    s->lev0 = (uint32_t)s->reset_out;
+    s->lev1 = s->reset_out >> 32;
 
-    s->lev0 = 0;
-    s->lev1 = 0;
+    memcpy(s->fsel, s->reset_fsel, sizeof(s->fsel));
+    memcpy(s->pup_cntrl_reg, s->reset_pup, sizeof(s->pup_cntrl_reg));
+    /* s->ext is outside the SoC: a SoC reset leaves the pins driven */
+    gpio_sd_route(s);
 
-    memset(s->fsel, 0, sizeof(s->fsel));
-
-    s->pup_cntrl_reg[0] = RESET_VAL_CNTRL_REG0;
-    s->pup_cntrl_reg[1] = RESET_VAL_CNTRL_REG1;
-    s->pup_cntrl_reg[2] = RESET_VAL_CNTRL_REG2;
-    s->pup_cntrl_reg[3] = RESET_VAL_CNTRL_REG3;
+    memset(s->eds, 0, sizeof(s->eds));
+    memset(s->ren, 0, sizeof(s->ren));
+    memset(s->fen, 0, sizeof(s->fen));
+    memset(s->hen, 0, sizeof(s->hen));
+    memset(s->len, 0, sizeof(s->len));
+    memset(s->aren, 0, sizeof(s->aren));
+    memset(s->afen, 0, sizeof(s->afen));
+    s->level = gpio_levels(s);
+    gpio_update_irq(s);
+    gpio_update_uart_cts(s);
+    gpio_update_spi_cs(s);
 }
 
 static const MemoryRegionOps bcm2838_gpio_ops = {
@@ -323,10 +709,28 @@ static const MemoryRegionOps bcm2838_gpio_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-static const VMStateDescription vmstate_bcm2838_gpio = {
-    .name = "bcm2838_gpio",
+static bool bcm2838_gpio_spi_ce_needed(void *opaque)
+{
+    BCM2838GpioState *s = opaque;
+
+    return s->spi_ce != MAKE_64BIT_MASK(0, BCM2838_GPIO_NUM_SPI_CS);
+}
+
+static const VMStateDescription vmstate_bcm2838_gpio_spi_ce = {
+    .name = "bcm2838_gpio/spi-ce",
     .version_id = 1,
     .minimum_version_id = 1,
+    .needed = bcm2838_gpio_spi_ce_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(spi_ce, BCM2838GpioState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_bcm2838_gpio = {
+    .name = "bcm2838_gpio",
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (VMStateField[]) {
         VMSTATE_UINT8_ARRAY(fsel, BCM2838GpioState, BCM2838_GPIO_NUM),
         VMSTATE_UINT32(lev0, BCM2838GpioState),
@@ -334,7 +738,20 @@ static const VMStateDescription vmstate_bcm2838_gpio = {
         VMSTATE_UINT8(sd_fsel, BCM2838GpioState),
         VMSTATE_UINT32_ARRAY(pup_cntrl_reg, BCM2838GpioState,
                              GPIO_PUP_PDN_CNTRL_NUM),
+        VMSTATE_UINT32_ARRAY(eds, BCM2838GpioState, 2),
+        VMSTATE_UINT32_ARRAY(ren, BCM2838GpioState, 2),
+        VMSTATE_UINT32_ARRAY(fen, BCM2838GpioState, 2),
+        VMSTATE_UINT32_ARRAY(hen, BCM2838GpioState, 2),
+        VMSTATE_UINT32_ARRAY(len, BCM2838GpioState, 2),
+        VMSTATE_UINT32_ARRAY(aren, BCM2838GpioState, 2),
+        VMSTATE_UINT32_ARRAY(afen, BCM2838GpioState, 2),
+        VMSTATE_UINT64(level, BCM2838GpioState),
+        VMSTATE_UINT8_ARRAY(ext, BCM2838GpioState, BCM2838_GPIO_NUM),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_bcm2838_gpio_spi_ce,
+        NULL
     }
 };
 
@@ -350,6 +767,36 @@ static void bcm2838_gpio_init(Object *obj)
                           "bcm2838_gpio", BCM2838_GPIO_REGS_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     qdev_init_gpio_out(dev, s->out, BCM2838_GPIO_NUM);
+    qdev_init_gpio_in(dev, gpio_input_set, BCM2838_GPIO_NUM);
+    for (int i = 0; i < BCM2838_GPIO_NUM_IRQS; i++) {
+        sysbus_init_irq(sbd, &s->irq[i]);
+    }
+    qdev_init_gpio_out_named(dev, s->uart_cts, "uart-cts",
+                             BCM2838_GPIO_NUM_UARTS);
+    qdev_init_gpio_in_named(dev, gpio_spi_ce_set, "spi-ce",
+                            BCM2838_GPIO_NUM_SPI_CS);
+    qdev_init_gpio_out_named(dev, s->spi_cs, "spi-cs",
+                             BCM2838_GPIO_NUM_SPI_CS);
+    /* chip enables are active low: none selected */
+    s->spi_ce = MAKE_64BIT_MASK(0, BCM2838_GPIO_NUM_SPI_CS);
+
+    /* Defaults without a "pins" preset: all inputs, the SoC reset pulls */
+    s->reset_pup[0] = RESET_VAL_CNTRL_REG0;
+    s->reset_pup[1] = RESET_VAL_CNTRL_REG1;
+    s->reset_pup[2] = RESET_VAL_CNTRL_REG2;
+    s->reset_pup[3] = RESET_VAL_CNTRL_REG3;
+    memset(s->ext, GPIO_EXT_NONE, sizeof(s->ext));
+
+    for (uintptr_t i = 0; i < BCM2838_GPIO_NUM; i++) {
+        g_autofree char *name = g_strdup_printf("gpio%" PRIuPTR, i);
+
+        object_property_add(obj, name, "str", gpio_get_pin, gpio_set_pin,
+                            NULL, (void *)i);
+        object_property_set_description(obj, name,
+            "external drive of the pin: high, low or none");
+    }
+    object_property_add_uint64_ptr(obj, "levels", &s->level,
+                                   OBJ_PROP_FLAG_READ);
 }
 
 static void bcm2838_gpio_realize(DeviceState *dev, Error **errp)
@@ -362,7 +809,16 @@ static void bcm2838_gpio_realize(DeviceState *dev, Error **errp)
 
     obj = object_property_get_link(OBJECT(dev), "sdbus-sdhost", &error_abort);
     s->sdbus_sdhost = SD_BUS(obj);
+    s->sd_fsel = BCM2838_SD_UNROUTED;
+
+    if (s->pins && !gpio_parse_pins(s, errp)) {
+        return;
+    }
 }
+
+static const Property bcm2838_gpio_properties[] = {
+    DEFINE_PROP_STRING("pins", BCM2838GpioState, pins),
+};
 
 static void bcm2838_gpio_class_init(ObjectClass *klass, const void *data)
 {
@@ -370,6 +826,7 @@ static void bcm2838_gpio_class_init(ObjectClass *klass, const void *data)
 
     dc->vmsd = &vmstate_bcm2838_gpio;
     dc->realize = &bcm2838_gpio_realize;
+    device_class_set_props(dc, bcm2838_gpio_properties);
     device_class_set_legacy_reset(dc, bcm2838_gpio_reset);
 }
 
