@@ -40,6 +40,7 @@ struct BCM2835PropertyState {
     uint32_t fw_variant;
     char *fw_version;
     uint32_t fw_hash[5];
+    uint32_t throttled;
     uint32_t clk_rate[16]; /* BCM2711 firmware clocks, by clock ID */
     /* firmware-controlled GPIO expander (Linux gpio-raspberrypi-exp) */
     uint32_t exp_gpio_dir[8];

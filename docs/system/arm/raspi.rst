@@ -59,6 +59,12 @@ sensor code covers, -88161 to 410040); the guest reads the nearest code, and
 
   (qemu) qom-set /machine/soc/peripherals/thermal temperature 85000
 
+``vcgencmd measure_clock`` reports what the BCM2711 firmware measures on a
+Compute Module 4 at idle: the ARM and V3D clocks at their firmware clock
+rate, the others at fixed rates, 0 for the gated ones, with the counting
+resolution of the firmware's measurement (13.18 kHz, 52.73 kHz for the ARM).
+PLLB is three times the ARM clock.
+
 The board identity is set with properties of ``bcm2835-property``:
 ``board-serial`` (64-bit) and ``mac`` give the serial number and the MAC
 address the firmware reports, in the mailbox and in OTP rows 28, 29, 64

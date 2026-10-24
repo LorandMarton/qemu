@@ -65,6 +65,175 @@ static int bcm2711_fw_clock(BCM2835PropertyState *s, uint32_t id)
     return -1;
 }
 
+/*
+ * A clock as "vcgencmd measure_clock" measures it: its edges counted over
+ * 4096 cycles of the 54 MHz crystal, scaled back and printed from a float.
+ * The ARM clock is counted divided by 4, and its count is 4097/4096 of the
+ * rate (a CM4 at 600 MHz reads 600169920, at 2 GHz 2000478464). Real counts
+ * differ by one between samples; this is the nearest.
+ */
+static uint32_t bcm2711_measure_clock(uint64_t rate, bool arm)
+{
+    const uint64_t ref = 54000000;
+    uint64_t step = arm ? 4 * ref : ref;
+    uint64_t n = (rate * (arm ? 4097 : 4096) + step / 2) / step;
+
+    return (float)((double)n * step / 4096);
+}
+
+/*
+ * Answer a VideoCore general command (vcgencmd). Only the commands Linux
+ * tooling commonly polls are implemented; the output format follows the
+ * BCM2711 firmware. Values match what the other tags report.
+ */
+static int bcm2835_property_gencmd(BCM2835PropertyState *s, const char *cmd,
+                                   char *resp, size_t len)
+{
+    g_auto(GStrv) argv = g_strsplit_set(cmd, " \t\n", 3);
+    const char *name = argv[0] ? argv[0] : "";
+    const char *arg = name[0] && argv[1] ? argv[1] : "";
+
+    if (!strcmp(name, "measure_temp")) {
+        /*
+         * From the sensor code, as the BCM2711 firmware converts it:
+         * 410.000 - 0.487 * code degrees (Linux has 410.040), to a tenth.
+         */
+        int mc = s->thermal ?
+                 410000 - 487 * bcm2838_thermal_get_code(s->thermal) : 25000;
+        int tenths = (mc >= 0 ? mc + 50 : mc - 50) / 100;
+
+        snprintf(resp, len, "temp=%s%d.%d'C", tenths < 0 ? "-" : "",
+                 abs(tenths) / 10, abs(tenths) % 10);
+    } else if (!strcmp(name, "get_throttled")) {
+        snprintf(resp, len, "throttled=0x%x", s->throttled);
+    } else if (!strcmp(name, "measure_volts")) {
+        snprintf(resp, len, "volt=%s", g_str_has_prefix(arg, "sdram") ?
+                 "1.1000V" : "0.8500V");
+    } else if (!strcmp(name, "measure_clock")) {
+        /*
+         * The firmware's clock numbers and the rates a CM4 measures at
+         * idle (vc4-kms-v3d, no display); 0: gated. The ARM and V3D clocks
+         * follow their firmware clock. The PLLs report their set rate, as
+         * a float; PLLB is three times the ARM clock (its ARM channel
+         * divides by 3: measured with the ARM at 600 MHz only).
+         */
+        static const struct {
+            const char *name;
+            int id;
+            uint32_t rate;
+        } clocks[] = {
+            { "arm", 48, 0 }, { "core", 1, 500000000 }, { "h264", 28, 0 },
+            { "isp", 45, 0 }, { "v3d", 46, 0 }, { "uart", 22, 48000000 },
+            { "pwm", 25, 0 }, { "emmc", 50, 250000000 },
+            { "pixel", 29, 75000000 }, { "vec", 10, 0 },
+            { "hdmi", 9, 120000000 }, { "dpi", 4, 0 },
+            { "emmc2", 51, 100000000 },
+            { "plla", 100, 3000000000u }, { "pllc", 100, 2592000000u },
+            { "plld", 100, 3000000000u }, { "pllh", 100, 3180815872u },
+            { "pllb", 100, 0 },
+        };
+        int i;
+
+        if (!arg[0]) {
+            snprintf(resp, len, "error=2 error_msg=\"Invalid arguments\"");
+            return -1;
+        }
+        for (i = 0; i < ARRAY_SIZE(clocks); i++) {
+            if (!strcmp(arg, clocks[i].name)) {
+                break;
+            }
+        }
+        if (i == ARRAY_SIZE(clocks)) {
+            snprintf(resp, len, "frequency(0)=0");
+        } else if (clocks[i].id == 100) {
+            /*
+             * The firmware computes it in single precision from the PLL's
+             * multiplier: the crystal times NDIV plus a 20-bit fraction.
+             */
+            uint64_t arm = s->clk_rate[RPI_FIRMWARE_ARM_CLK_ID];
+            uint64_t mult = (3 * arm << 20) / 54000000;
+            float pllb = 54e6f * ((mult >> 20) +
+                                  (float)(mult & 0xfffff) / (1 << 20));
+
+            snprintf(resp, len, "frequency(100)=%u",
+                     clocks[i].rate ?: (uint32_t)pllb);
+        } else {
+            bool arm = clocks[i].id == 48;
+            uint32_t rate = arm ? s->clk_rate[RPI_FIRMWARE_ARM_CLK_ID] :
+                            clocks[i].id == 46 ?
+                            s->clk_rate[RPI_FIRMWARE_V3D_CLK_ID] :
+                            clocks[i].rate;
+
+            snprintf(resp, len, "frequency(%d)=%u", clocks[i].id,
+                     bcm2711_measure_clock(rate, arm));
+        }
+    } else if (!strcmp(name, "get_mem")) {
+        if (!strcmp(arg, "arm")) {
+            snprintf(resp, len, "arm=%uM", s->fbdev->vcram_base >> 20);
+        } else if (!strcmp(arg, "gpu")) {
+            snprintf(resp, len, "gpu=%uM", s->fbdev->vcram_size >> 20);
+        } else {
+            snprintf(resp, len, "%s=0M", arg);
+        }
+    } else if (!strcmp(name, "otp_dump")) {
+        resp[0] = 0;
+        /* row 0 is not backed by the OTP model */
+        for (int n = 0; n <= BCM2835_OTP_ROW_COUNT; n++) {
+            size_t used = strlen(resp);
+            snprintf(resp + used, len - used, "%02d:%08x\n", n,
+                     n ? bcm2835_otp_get_row(s->otp, n) : 0);
+        }
+    } else if (!strcmp(name, "get_config") && s->vc_config) {
+        g_auto(GStrv) lines = g_strsplit(s->vc_config, "\n", -1);
+
+        resp[0] = 0;
+        for (int i = 0; lines[i]; i++) {
+            size_t used = strlen(resp);
+            const char *eq = strchr(lines[i], '=');
+
+            if (!eq || !lines[i][0]) {
+                continue;
+            }
+            if (!strcmp(arg, "int") ||
+                (eq - lines[i] == strlen(arg) &&
+                 !strncmp(lines[i], arg, eq - lines[i]))) {
+                snprintf(resp + used, len - used, "%s%s",
+                         used ? "\n" : "", lines[i]);
+            }
+        }
+        if (!resp[0]) {
+            snprintf(resp, len, "%s=0", arg);
+        }
+    } else if (!strcmp(name, "version") && s->fw_version) {
+        static const char *const variants[] = {
+            "unknown", "start", "start_x", "start_db", "start_cd",
+        };
+        time_t t = s->fw_revision;
+        struct tm tm;
+        char date[16], when[16];
+
+        /*
+         * "%s %s %s" of the build date and time (__DATE__ __TIME__) and an
+         * empty string, then the version, type and variant
+         */
+        gmtime_r(&t, &tm);
+        strftime(date, sizeof(date), "%b %e %Y", &tm);
+        strftime(when, sizeof(when), "%H:%M:%S", &tm);
+        snprintf(resp, len, "%s %s %s\nCopyright (c) 2012 Broadcom\n"
+                 "version %s (release) (%s)", date, when, "", s->fw_version,
+                 variants[s->fw_variant < ARRAY_SIZE(variants) ?
+                          s->fw_variant : 0]);
+    } else if (!strcmp(name, "commands")) {
+        snprintf(resp, len, "commands=\"commands, get_mem, measure_clock, "
+                 "measure_temp, measure_volts, get_config, get_throttled, "
+                 "otp_dump, version\"");
+    } else {
+        snprintf(resp, len, "error=1 error_msg=\"Command not registered\"");
+        return -1;
+    }
+    return 0;
+}
+
 /* https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface */
 
 static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
@@ -426,7 +595,7 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
             break;
 
         case RPI_FWREQ_GET_THROTTLED:
-            stl_le_phys(&s->dma_as, value + 12, 0);
+            stl_le_phys(&s->dma_as, value + 12, s->throttled);
             resplen = 4;
             break;
 
@@ -507,6 +676,31 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
                 }
             }
             stl_le_phys(&s->dma_as, value + 16, !!(s->domain_on & BIT(domain)));
+            break;
+        }
+
+        case RPI_FWREQ_GET_GENCMD_RESULT:
+        {
+            /* @(value + 12): error code, @(value + 16): command/response */
+            g_autofree char *buf = NULL;
+            size_t len;
+
+            if (bufsize <= 4) {
+                resplen = 0;
+                break;
+            }
+            len = MIN(bufsize - 4, 1024);
+            buf = g_malloc0(len);
+            dma_memory_read(&s->dma_as, value + 16, buf, len - 1,
+                            MEMTXATTRS_UNSPECIFIED);
+            {
+                g_autofree char *cmd = g_strndup(buf, len - 1);
+                stl_le_phys(&s->dma_as, value + 12,
+                            bcm2835_property_gencmd(s, cmd, buf, len));
+            }
+            dma_memory_write(&s->dma_as, value + 16, buf, strlen(buf) + 1,
+                             MEMTXATTRS_UNSPECIFIED);
+            resplen = 4 + strlen(buf) + 1;
             break;
         }
 
@@ -692,12 +886,13 @@ static const MemoryRegionOps bcm2835_property_ops = {
 
 static const VMStateDescription vmstate_bcm2835_property = {
     .name = TYPE_BCM2835_PROPERTY,
-    .version_id = 4,
-    .minimum_version_id = 4,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .fields = (const VMStateField[]) {
         VMSTATE_MACADDR(macaddr, BCM2835PropertyState),
         VMSTATE_UINT32(addr, BCM2835PropertyState),
         VMSTATE_BOOL(pending, BCM2835PropertyState),
+        VMSTATE_UINT32(throttled, BCM2835PropertyState),
         VMSTATE_UINT32_ARRAY(clk_rate, BCM2835PropertyState, 16),
         VMSTATE_UINT32_ARRAY(exp_gpio_dir, BCM2835PropertyState, 8),
         VMSTATE_UINT32_ARRAY(exp_gpio_pol, BCM2835PropertyState, 8),
@@ -724,6 +919,14 @@ static void bcm2835_property_init(Object *obj)
 
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(s), &s->mbox_irq);
+
+    /*
+     * get_throttled state (bit 0 under-voltage, 1 arm freq capped,
+     * 2 throttled, 3 soft temp limit, bits 16-19 the same "has occurred"),
+     * writable at run time with qom-set to exercise guest health checks.
+     */
+    object_property_add_uint32_ptr(obj, "throttled", &s->throttled,
+                                   OBJ_PROP_FLAG_READWRITE);
 }
 
 static void bcm2835_property_reset(DeviceState *dev)
