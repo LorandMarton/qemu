@@ -38,6 +38,8 @@ static void xhci_sysbus_realize(DeviceState *dev, Error **errp)
     XHCISysbusState *s = XHCI_SYSBUS(dev);
 
     object_property_set_link(OBJECT(&s->xhci), "host", OBJECT(s), NULL);
+    s->xhci.numintrs = s->intrs;
+    s->xhci.numslots = s->slots;
     if (!qdev_realize(DEVICE(&s->xhci), NULL, errp)) {
         return;
     }
@@ -84,8 +86,8 @@ void xhci_sysbus_build_aml(Aml *scope, uint32_t mmio, unsigned int irq)
 }
 
 static const Property xhci_sysbus_props[] = {
-    DEFINE_PROP_UINT32("intrs", XHCISysbusState, xhci.numintrs, XHCI_MAXINTRS),
-    DEFINE_PROP_UINT32("slots", XHCISysbusState, xhci.numslots, XHCI_MAXSLOTS),
+    DEFINE_PROP_UINT32("intrs", XHCISysbusState, intrs, XHCI_MAXINTRS),
+    DEFINE_PROP_UINT32("slots", XHCISysbusState, slots, XHCI_MAXSLOTS),
 };
 
 static const VMStateDescription vmstate_xhci_sysbus = {

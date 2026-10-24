@@ -25,6 +25,12 @@ typedef struct XHCISysbusState {
     /*< public >*/
     XHCIState xhci;
     qemu_irq *irq;
+    /*
+     * Kept here and copied at realize: initializing the xhci child clears
+     * whatever the property defaults put into it.
+     */
+    uint32_t intrs;
+    uint32_t slots;
 } XHCISysbusState;
 
 void xhci_sysbus_reset(DeviceState *dev);
