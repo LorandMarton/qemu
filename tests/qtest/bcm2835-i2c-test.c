@@ -89,6 +89,32 @@ static void test_i2c_read_write(gconstpointer data)
 
 }
 
+/* A transfer to an address without a device ends with ERR and DONE */
+static void test_i2c_nack(gconstpointer data)
+{
+    intptr_t index = (intptr_t) data;
+    uint32_t base_addr = bsc_base_addrs[index];
+    uint32_t status;
+
+    for (int read = 0; read < 2; read++) {
+        writel(base_addr + BCM2835_I2C_A, 0x51);
+        writel(base_addr + BCM2835_I2C_DLEN, 2);
+        bcm2835_i2c_init_transfer(base_addr, read);
+
+        status = readl(base_addr + BCM2835_I2C_S);
+        g_assert_cmphex(status & (BCM2835_I2C_S_ERR | BCM2835_I2C_S_DONE |
+                                  BCM2835_I2C_S_TA), ==,
+                        BCM2835_I2C_S_ERR | BCM2835_I2C_S_DONE);
+        g_assert_cmphex(status & BCM2835_I2C_S_RXD, ==, 0);
+
+        writel(base_addr + BCM2835_I2C_S, BCM2835_I2C_S_DONE |
+                                          BCM2835_I2C_S_ERR |
+                                          BCM2835_I2C_S_CLKT);
+        g_assert_cmphex(readl(base_addr + BCM2835_I2C_S) &
+                        (BCM2835_I2C_S_ERR | BCM2835_I2C_S_DONE), ==, 0);
+    }
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -101,6 +127,9 @@ int main(int argc, char **argv)
         g_strdup_printf("/bcm2835/bcm2835-i2c%d/read_write", i);
         qtest_add_data_func(test_name, (void *)(intptr_t) i,
                             test_i2c_read_write);
+        g_autofree char *nack_name =
+        g_strdup_printf("/bcm2835/bcm2835-i2c%d/nack", i);
+        qtest_add_data_func(nack_name, (void *)(intptr_t) i, test_i2c_nack);
     }
 
     /* Run I2C tests with TMP105 slaves on all three buses */

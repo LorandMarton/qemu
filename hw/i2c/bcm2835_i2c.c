@@ -50,11 +50,27 @@ static void bcm2835_i2c_update_interrupt(BCM2835I2CState *s)
     qemu_set_irq(s->irq, do_interrupt);
 }
 
-static void bcm2835_i2c_begin_transfer(BCM2835I2CState *s)
+/*
+ * A NACK (address or data) makes the controller send STOP and end the
+ * transfer: ERR and DONE set, TA, TXW and RXR clear, the remaining bytes
+ * not transferred. Linux then reports -EIO (DONE with bytes left), or times
+ * out when the NACKed message did not enable INTD (the write of a
+ * write+read pair), as on the BCM2711.
+ */
+static void bcm2835_i2c_nack(BCM2835I2CState *s)
+{
+    i2c_end_transfer(s->bus);
+    s->s |= BCM2835_I2C_S_ERR | BCM2835_I2C_S_DONE;
+    s->s &= ~(BCM2835_I2C_S_TA | BCM2835_I2C_S_RXR |
+              BCM2835_I2C_S_TXW | BCM2835_I2C_S_RXD);
+}
+
+static bool bcm2835_i2c_begin_transfer(BCM2835I2CState *s)
 {
     int direction = s->c & BCM2835_I2C_C_READ;
     if (i2c_start_transfer(s->bus, s->a, direction)) {
-        s->s |= BCM2835_I2C_S_ERR;
+        bcm2835_i2c_nack(s);
+        return false;
     }
     s->s |= BCM2835_I2C_S_TA;
 
@@ -63,6 +79,7 @@ static void bcm2835_i2c_begin_transfer(BCM2835I2CState *s)
     } else {
         s->s |= BCM2835_I2C_S_TXW;
     }
+    return true;
 }
 
 static void bcm2835_i2c_finish_transfer(BCM2835I2CState *s)
@@ -144,8 +161,8 @@ static void bcm2835_i2c_write(void *opaque, hwaddr addr,
         s->c = writeval & ~BCM2835_I2C_C_ST;
 
         /* Start transfer */
-        if (writeval & (BCM2835_I2C_C_ST | BCM2835_I2C_C_I2CEN)) {
-            bcm2835_i2c_begin_transfer(s);
+        if (writeval & (BCM2835_I2C_C_ST | BCM2835_I2C_C_I2CEN) &&
+            bcm2835_i2c_begin_transfer(s)) {
             /*
              * Handle special case where transfer starts with zero data length.
              * Required for zero length i2c quick messages to work.
@@ -181,11 +198,11 @@ static void bcm2835_i2c_write(void *opaque, hwaddr addr,
                 if (!i2c_send(s->bus, writeval & 0xff)) {
                     s->dlen -= 1;
                 } else {
-                    s->s |= BCM2835_I2C_S_ERR;
+                    bcm2835_i2c_nack(s);
                 }
             }
 
-            if (s->dlen == 0) {
+            if (s->dlen == 0 && s->s & BCM2835_I2C_S_TA) {
                 bcm2835_i2c_finish_transfer(s);
             }
         }
