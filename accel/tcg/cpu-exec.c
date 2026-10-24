@@ -195,56 +195,58 @@ static bool tb_lookup_cmp(const void *p, const void *d)
     return false;
 }
 
-static TranslationBlock *tb_htable_lookup(CPUState *cpu, TCGTBCPUState s)
+static TranslationBlock *tb_htable_lookup(CPUState *cpu,
+                                          const TCGTBCPUState *s)
 {
     tb_page_addr_t phys_pc;
     struct tb_desc desc;
     uint32_t h;
 
-    desc.s = s;
+    desc.s = *s;
     desc.env = cpu_env(cpu);
-    phys_pc = get_page_addr_code(desc.env, s.pc);
+    phys_pc = get_page_addr_code(desc.env, s->pc);
     if (phys_pc == -1) {
         return NULL;
     }
     desc.page_addr0 = phys_pc;
-    h = tb_hash_func(phys_pc, (s.cflags & CF_PCREL ? 0 : s.pc),
-                     s.flags, s.cs_base, s.cflags);
+    h = tb_hash_func(phys_pc, (s->cflags & CF_PCREL ? 0 : s->pc),
+                     s->flags, s->cs_base, s->cflags);
     return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
 }
 
 /**
  * tb_lookup:
  * @cpu: CPU that will execute the returned translation block
- * @pc: guest PC
- * @cs_base: arch-specific value associated with translation block
- * @flags: arch-specific translation block flags
- * @cflags: CF_* flags
+ * @s: guest PC, cs_base, arch-specific flags and CF_* flags
  *
- * Look up a translation block inside the QHT using @pc, @cs_base, @flags and
- * @cflags. Uses @cpu's tb_jmp_cache. Might cause an exception, so have a
- * longjmp destination ready.
+ * Look up a translation block inside the QHT using @s. Uses @cpu's
+ * tb_jmp_cache. Might cause an exception, so have a longjmp destination
+ * ready.
+ *
+ * @s is passed by reference: a copy would be stored field by field and
+ * read back whole, which stalls store forwarding on this hot path.
  *
  * Returns: an existing translation block or NULL.
  */
-static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
+static inline TranslationBlock *tb_lookup(CPUState *cpu,
+                                          const TCGTBCPUState *s)
 {
     TranslationBlock *tb;
     CPUJumpCache *jc;
     uint32_t hash;
 
     /* we should never be trying to look up an INVALID tb */
-    tcg_debug_assert(!(s.cflags & CF_INVALID));
+    tcg_debug_assert(!(s->cflags & CF_INVALID));
 
-    hash = tb_jmp_cache_hash_func(s.pc);
+    hash = tb_jmp_cache_hash_func(s->pc);
     jc = cpu->tb_jmp_cache;
 
     tb = qatomic_read(&jc->array[hash].tb);
     if (likely(tb &&
-               jc->array[hash].pc == s.pc &&
-               tb->cs_base == s.cs_base &&
-               tb->flags == s.flags &&
-               tb_cflags(tb) == s.cflags)) {
+               jc->array[hash].pc == s->pc &&
+               tb->cs_base == s->cs_base &&
+               tb->flags == s->flags &&
+               tb_cflags(tb) == s->cflags)) {
         goto hit;
     }
 
@@ -253,7 +255,7 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
         return NULL;
     }
 
-    jc->array[hash].pc = s.pc;
+    jc->array[hash].pc = s->pc;
     qatomic_set(&jc->array[hash].tb, tb);
 
 hit:
@@ -261,7 +263,7 @@ hit:
      * As long as tb is not NULL, the contents are consistent.  Therefore,
      * the virtual PC has to match for non-CF_PCREL translations.
      */
-    assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s.pc);
+    assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s->pc);
     return tb;
 }
 
@@ -395,7 +397,7 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
         cpu_loop_exit(cpu);
     }
 
-    tb = tb_lookup(cpu, s);
+    tb = tb_lookup(cpu, &s);
     if (tb == NULL) {
         return tcg_code_gen_epilogue;
     }
@@ -576,7 +578,7 @@ void cpu_exec_step_atomic(CPUState *cpu)
          * Any breakpoint for this insn will have been recognized earlier.
          */
 
-        tb = tb_lookup(cpu, s);
+        tb = tb_lookup(cpu, &s);
         if (tb == NULL) {
             mmap_lock();
             tb = tb_gen_code(cpu, s);
@@ -971,7 +973,7 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                 break;
             }
 
-            tb = tb_lookup(cpu, s);
+            tb = tb_lookup(cpu, &s);
             if (tb == NULL) {
                 CPUJumpCache *jc;
                 uint32_t h;
