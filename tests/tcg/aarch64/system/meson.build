@@ -69,6 +69,7 @@ tests += {
     'qemu_args': qemu_def_args,
     'wrapper': [prog_record_replay],
   },
+  'tlbi-block.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
   'vtimer.c': {
     'cflags': cflags,
     'qemu_args': ['-M', 'virt,virtualization=on,gic-version=2',

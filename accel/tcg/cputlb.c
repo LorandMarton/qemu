@@ -500,7 +500,14 @@ static inline void tlb_flush_vtlb_page_locked(CPUState *cpu, int mmu_idx,
     tlb_flush_vtlb_page_mask_locked(cpu, mmu_idx, page, -1);
 }
 
-static void tlb_flush_page_locked(CPUState *cpu, int midx, vaddr page)
+/*
+ * Return true if the whole TLB was flushed.  The jump cache must then be
+ * flushed whole as well: a flushed large page may hold translated code
+ * anywhere in it, and once the TLB has forgotten the large page, no flush
+ * of one of its other pages would find that code.  A guest page larger
+ * than TARGET_PAGE_SIZE is such a large page.
+ */
+static bool tlb_flush_page_locked(CPUState *cpu, int midx, vaddr page)
 {
     vaddr lp_addr = cpu->neg.tlb.d[midx].large_page_addr;
     vaddr lp_mask = cpu->neg.tlb.d[midx].large_page_mask;
@@ -511,12 +518,13 @@ static void tlb_flush_page_locked(CPUState *cpu, int midx, vaddr page)
                   VADDR_PRIx "/%016" VADDR_PRIx ")\n",
                   midx, lp_addr, lp_mask);
         tlb_flush_one_mmuidx_locked(cpu, midx, get_clock_realtime());
-    } else {
-        if (tlb_flush_entry_locked(tlb_entry(cpu, midx, page), page)) {
-            tlb_n_used_entries_dec(cpu, midx);
-        }
-        tlb_flush_vtlb_page_locked(cpu, midx, page);
+        return true;
     }
+    if (tlb_flush_entry_locked(tlb_entry(cpu, midx, page), page)) {
+        tlb_n_used_entries_dec(cpu, midx);
+    }
+    tlb_flush_vtlb_page_locked(cpu, midx, page);
+    return false;
 }
 
 /**
@@ -532,6 +540,7 @@ static void tlb_flush_page_by_mmuidx_async_0(CPUState *cpu,
                                              vaddr addr,
                                              MMUIdxMap idxmap)
 {
+    bool full = false;
     int mmu_idx;
 
     assert_cpu_is_self(cpu);
@@ -541,10 +550,15 @@ static void tlb_flush_page_by_mmuidx_async_0(CPUState *cpu,
     qemu_spin_lock(&cpu->neg.tlb.c.lock);
     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
         if ((idxmap >> mmu_idx) & 1) {
-            tlb_flush_page_locked(cpu, mmu_idx, addr);
+            full |= tlb_flush_page_locked(cpu, mmu_idx, addr);
         }
     }
     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+
+    if (full) {
+        tcg_flush_jmp_cache(cpu);
+        return;
+    }
 
     /*
      * Discard jump cache entries for any tb which might potentially
@@ -661,7 +675,8 @@ void tlb_flush_page_all_cpus_synced(CPUState *src, vaddr addr)
     tlb_flush_page_by_mmuidx_all_cpus_synced(src, addr, ALL_MMUIDX_BITS);
 }
 
-static void tlb_flush_range_locked(CPUState *cpu, int midx,
+/* Return true if the whole TLB was flushed, as tlb_flush_page_locked().  */
+static bool tlb_flush_range_locked(CPUState *cpu, int midx,
                                    vaddr addr, vaddr len,
                                    unsigned bits)
 {
@@ -684,7 +699,7 @@ static void tlb_flush_range_locked(CPUState *cpu, int midx,
                   "%016" VADDR_PRIx "/%016" VADDR_PRIx "+%016" VADDR_PRIx ")\n",
                   midx, addr, mask, len);
         tlb_flush_one_mmuidx_locked(cpu, midx, get_clock_realtime());
-        return;
+        return true;
     }
 
     /*
@@ -697,7 +712,7 @@ static void tlb_flush_range_locked(CPUState *cpu, int midx,
                   "%016" VADDR_PRIx "/%016" VADDR_PRIx ")\n",
                   midx, d->large_page_addr, d->large_page_mask);
         tlb_flush_one_mmuidx_locked(cpu, midx, get_clock_realtime());
-        return;
+        return true;
     }
 
     for (vaddr i = 0; i < len; i += TARGET_PAGE_SIZE) {
@@ -709,6 +724,7 @@ static void tlb_flush_range_locked(CPUState *cpu, int midx,
         }
         tlb_flush_vtlb_page_mask_locked(cpu, midx, page, mask);
     }
+    return false;
 }
 
 typedef struct {
@@ -721,6 +737,7 @@ typedef struct {
 static void tlb_flush_range_by_mmuidx_async_0(CPUState *cpu,
                                               TLBFlushRangeData d)
 {
+    bool full = false;
     int mmu_idx;
 
     assert_cpu_is_self(cpu);
@@ -731,7 +748,8 @@ static void tlb_flush_range_by_mmuidx_async_0(CPUState *cpu,
     qemu_spin_lock(&cpu->neg.tlb.c.lock);
     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
         if ((d.idxmap >> mmu_idx) & 1) {
-            tlb_flush_range_locked(cpu, mmu_idx, d.addr, d.len, d.bits);
+            full |= tlb_flush_range_locked(cpu, mmu_idx, d.addr, d.len,
+                                           d.bits);
         }
     }
     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
@@ -740,7 +758,7 @@ static void tlb_flush_range_by_mmuidx_async_0(CPUState *cpu,
      * If the length is larger than the jump cache size, then it will take
      * longer to clear each entry individually than it will to clear it all.
      */
-    if (d.len >= (TARGET_PAGE_SIZE * TB_JMP_CACHE_SIZE)) {
+    if (full || d.len >= (TARGET_PAGE_SIZE * TB_JMP_CACHE_SIZE)) {
         tcg_flush_jmp_cache(cpu);
         return;
     }
