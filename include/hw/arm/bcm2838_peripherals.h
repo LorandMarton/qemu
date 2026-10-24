@@ -28,6 +28,7 @@
 
 /* SPI */
 #define GIC_SPI_INTERRUPT_MBOX         33
+#define GIC_SPI_INTERRUPT_VCHIQ        34
 #define GIC_SPI_INTERRUPT_MPHI         40
 #define GIC_SPI_INTERRUPT_GPIO_0       113 /* banks 0, 1, 2, any: 113-116 */
 #define GIC_SPI_INTERRUPT_DWC2         73

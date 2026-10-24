@@ -80,6 +80,7 @@ uint64_t board_ram_size(uint32_t board_rev);
 #define ARMCTRL_TIMER0_1_OFFSET (ARM_OFFSET + 0x400) /* Timer 0 and 1 (SP804) */
 #define ARMCTRL_0_SBM_OFFSET    (ARM_OFFSET + 0x800) /* User 0 (ARM) Semaphores
                                                       * Doorbells & Mailboxes */
+#define VCHIQ_OFFSET            (ARM_OFFSET + 0x840) /* VCHIQ doorbells */
 #define PM_OFFSET               0x100000 /* Power Management */
 #define CPRMAN_OFFSET           0x101000 /* Clock Management */
 #define AVS_OFFSET              0x103000 /* Audio Video Standard */

@@ -37,6 +37,8 @@ Implemented devices
  * USB2 host controller (DWC2 and MPHI)
  * MailBox controller (MBOX)
  * VideoCore firmware (property)
+ * VideoCore message queue (VCHIQ) with the shared memory (vc-sm-cma) and
+   MMAL services; see `VideoCore services`_
  * Peripheral SPI controller (SPI), also in DMA mode; SPI3 to SPI6 on
    raspi4b and raspicm4
  * Broadcom Serial Controller (I2C)
@@ -60,6 +62,7 @@ Missing devices
  * Display output: frame composition, video timing, writeback and HDMI
    signalling (raspi4b, raspicm4)
  * V3D job execution (raspi4b, raspicm4)
+ * VideoCore multimedia processing: MMAL buffers, VCHIQ bulk transfers
  * PCIe MSI/MSI-X interrupt delivery (raspi4b) -- INTx works; a PCIe
    device that only signals via MSI/MSI-X needs ``msi=off,msix=off``
 
@@ -229,6 +232,23 @@ A CEC transmission behaves as on a bus with no other device: a directed
 message is not acknowledged, a broadcast message is sent. An EDID for the
 DDC bus can be added with ``-device i2c-ddc,bus=ddc0,address=0x50`` (DDC1:
 ``bus=ddc1``).
+
+VideoCore services
+------------------
+
+The VideoCore end of VCHIQ, the message queue between Linux and the
+firmware, is part of the model: Linux hands over its slot memory with the
+``VCHIQ_INIT`` property, then connects and opens services through the
+slots and the VCHIQ doorbells. The model has the shared memory service
+(``SMEM``, used by ``vc-sm-cma``) and the MMAL service (``mmal``) with the
+components the Raspberry Pi 4 firmware has for the ``bcm2835-codec`` and
+``bcm2835-isp`` drivers: ``ril.video_decode``, ``ril.video_encode``,
+``ril.isp``, ``ril.image_fx`` and ``ril.image_encode``, with the ports and
+encodings of that firmware, and ``camera_info``, which finds no camera for
+the legacy camera stack. The drivers register their V4L2 devices and media
+controllers as on the board, and formats can be enumerated and set. The
+components process nothing: enabling a port fails with ``ENOSYS``. Other
+services are closed when opened, and a bulk transfer is aborted.
 
 Wireless LAN
 ------------

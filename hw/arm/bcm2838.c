@@ -269,6 +269,10 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->mboxes), 0,
                        qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_MBOX));
 
+    /* Connect the VCHIQ doorbell to the interrupt controller */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->vchiq), 0,
+                       qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_VCHIQ));
+
     /* Connect SD host to the interrupt controller */
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->sdhost), 0,
                        qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_SDHOST));

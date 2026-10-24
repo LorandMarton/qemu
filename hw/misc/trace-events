@@ -477,3 +477,18 @@ tt_atlantis_prcm_write(uint32_t domain, uint64_t offset, uint64_t data) "domain 
 
 # bcm2838_dvp.c
 bcm2838_dvp_write(uint64_t addr, uint64_t value) "addr 0x%" PRIx64 " value 0x%" PRIx64
+
+
+# bcm2835_vchiq.c
+bcm2835_vchiq_init(uint32_t channelbase, const char *result) "channelbase 0x%08x: %s"
+bcm2835_vchiq_rx(uint32_t type, uint32_t src, uint32_t dst, uint32_t size) "ARM message type %u port %u to %u, %u bytes"
+bcm2835_vchiq_tx(uint32_t type, uint32_t src, uint32_t dst, uint32_t size) "VC message type %u port %u to %u, %u bytes"
+bcm2835_vchiq_open(uint32_t fourcc, uint32_t arm_port, uint32_t vc_port) "service 0x%08x ARM port %u: VC port %u"
+bcm2835_vchiq_sm(uint32_t type, uint32_t trans_id) "SMEM message type %u trans_id %u"
+bcm2835_vchiq_sm_import(uint32_t handle, uint32_t addr, uint32_t size) "SMEM import 0x%x: 0x%08x, %u bytes"
+
+# bcm2835_vchiq_mmal.c
+bcm2835_vchiq_mmal(uint32_t type, uint32_t arg) "MMAL message type %u, 0x%x"
+bcm2835_vchiq_mmal_status(uint32_t type, uint32_t status) "MMAL message type %u: status %u"
+bcm2835_vchiq_mmal_create(const char *name, uint32_t handle) "MMAL %s: component %u"
+bcm2835_vchiq_mmal_parameter_set(uint32_t handle, uint32_t port, uint32_t id, uint32_t size) "MMAL component %u port %u: parameter 0x%x, %u bytes"

@@ -135,6 +135,11 @@ static void raspi_peripherals_base_init(Object *obj)
     object_property_add_const_link(OBJECT(&s->property), "otp",
                                    OBJECT(&s->otp));
 
+    /* VCHIQ, the VideoCore side of the message queue */
+    object_initialize_child(obj, "vchiq", &s->vchiq, TYPE_BCM2835_VCHIQ);
+    object_property_add_const_link(OBJECT(&s->property), "vchiq",
+                                   OBJECT(&s->vchiq));
+
     /* Extended Mass Media Controller */
     object_initialize_child(obj, "sdhci", &s->sdhci, TYPE_SYSBUS_SDHCI);
 
@@ -353,6 +358,18 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->mboxes), 0,
         qdev_get_gpio_in_named(DEVICE(&s->ic), BCM2835_IC_ARM_IRQ,
                                INTERRUPT_ARM_MAILBOX));
+
+    /* VCHIQ doorbells, within the mailbox block */
+    object_property_set_link(OBJECT(&s->vchiq), "dma-mr",
+                             OBJECT(&s->gpu_bus_mr), &error_abort);
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->vchiq), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(&s->peri_mr, VCHIQ_OFFSET,
+                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->vchiq), 0), 1);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->vchiq), 0,
+        qdev_get_gpio_in_named(DEVICE(&s->ic), BCM2835_IC_ARM_IRQ,
+                               INTERRUPT_ARM_DOORBELL_0));
 
     /* Framebuffer */
     vcram_size = object_property_get_uint(OBJECT(s), "vcram-size", &err);

@@ -710,11 +710,16 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
             break;
 
         case RPI_FWREQ_VCHIQ_INIT:
-            stl_le_phys(&s->dma_as,
-                        value + offsetof(rpi_firmware_prop_request_t, payload),
-                        0);
+        {
+            hwaddr payload = value +
+                             offsetof(rpi_firmware_prop_request_t, payload);
+
+            stl_le_phys(&s->dma_as, payload,
+                        bcm2835_vchiq_init(s->vchiq,
+                                           ldl_le_phys(&s->dma_as, payload)));
             resplen = VCHI_BUSADDR_SIZE;
             break;
+        }
 
         /* Customer OTP */
 
@@ -954,6 +959,9 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
 
     obj = object_property_get_link(OBJECT(dev), "otp", &error_abort);
     s->otp = BCM2835_OTP(obj);
+
+    obj = object_property_get_link(OBJECT(dev), "vchiq", &error_abort);
+    s->vchiq = BCM2835_VCHIQ(obj);
 
     if (object_property_find(OBJECT(dev), "thermal")) {
         obj = object_property_get_link(OBJECT(dev), "thermal", &error_abort);
