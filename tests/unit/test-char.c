@@ -1621,6 +1621,43 @@ static void char_serial_test(void)
 
     qemu_opts_del(opts);
 }
+
+/*
+ * A session leader that opens a terminal without O_NOCTTY makes it its
+ * controlling terminal, and gets SIGHUP when the terminal hangs up.  Open
+ * a pty as a session leader: there must be no controlling terminal.
+ */
+static void char_serial_noctty_test(void)
+{
+    QemuOpts *opts;
+    Chardev *chr;
+    int master;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    g_assert_cmpint(setsid(), >=, 0);
+    master = posix_openpt(O_RDWR | O_NOCTTY);
+    g_assert_cmpint(master, >=, 0);
+    g_assert_cmpint(grantpt(master), ==, 0);
+    g_assert_cmpint(unlockpt(master), ==, 0);
+
+    opts = qemu_opts_create(qemu_find_opts("chardev"), "serial-id",
+                            1, &error_abort);
+    qemu_opt_set(opts, "backend", "serial", &error_abort);
+    qemu_opt_set(opts, "path", ptsname(master), &error_abort);
+    chr = qemu_chr_new_from_opts(opts, NULL, &error_abort);
+
+    /* /dev/tty opens only with a controlling terminal */
+    g_assert_cmpint(open("/dev/tty", O_RDWR | O_NOCTTY), <, 0);
+
+    object_unparent(OBJECT(chr));
+    qemu_opts_del(opts);
+    close(master);
+}
 #endif
 
 #if defined(HAVE_CHARDEV_PARALLEL) && !defined(WIN32)
@@ -1987,6 +2024,7 @@ int main(int argc, char **argv)
     g_test_add_func("/char/udp", char_udp_test);
 #if defined(HAVE_CHARDEV_SERIAL) && !defined(WIN32)
     g_test_add_func("/char/serial", char_serial_test);
+    g_test_add_func("/char/serial/no-ctty", char_serial_noctty_test);
 #endif
 #if defined(HAVE_CHARDEV_PARALLEL) && !defined(WIN32)
     g_test_add_func("/char/parallel", char_parallel_test);

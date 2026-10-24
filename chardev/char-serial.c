@@ -266,8 +266,9 @@ static bool serial_chr_open(Chardev *chr, ChardevBackend *backend, Error **errp)
     ChardevHostdev *serial = backend->u.serial.data;
     int fd;
 
-    fd = qmp_chardev_open_file_source(serial->device, O_RDWR | O_NONBLOCK,
-                                      errp);
+    /* The device must not become our controlling terminal */
+    fd = qmp_chardev_open_file_source(serial->device,
+                                      O_RDWR | O_NONBLOCK | O_NOCTTY, errp);
     if (fd < 0) {
         return false;
     }
