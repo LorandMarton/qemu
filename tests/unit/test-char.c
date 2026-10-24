@@ -7,6 +7,7 @@
 #include "qemu/option.h"
 #include "qemu/sockets.h"
 #include "chardev/char-fe.h"
+#include "chardev/char-serial.h"
 #include "system/system.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-char.h"
@@ -1660,6 +1661,62 @@ static void char_serial_noctty_test(void)
 }
 #endif
 
+#if defined(HAVE_CHARDEV_SERIAL) && defined(CONFIG_LINUX)
+#include <termios.h>
+
+/* The rate a guest programs reaches the host port: the nearest standard one */
+static void char_serial_speed_test(void)
+{
+    static const struct {
+        int asked;
+        speed_t speed;
+    } rates[] = {
+        { 9600, B9600 },
+        { 115200, B115200 },
+        { 120000, B115200 },
+        { 500000, B500000 },
+        { 1000000, B1000000 },
+        { 1500000, B1500000 },
+    };
+    QemuOpts *opts;
+    CharFrontend be;
+    Chardev *chr;
+    struct termios t;
+    int master, slave;
+
+    master = posix_openpt(O_RDWR | O_NOCTTY);
+    g_assert_cmpint(master, >=, 0);
+    g_assert_cmpint(grantpt(master), ==, 0);
+    g_assert_cmpint(unlockpt(master), ==, 0);
+    slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+    g_assert_cmpint(slave, >=, 0);
+
+    opts = qemu_opts_create(qemu_find_opts("chardev"), "serial-id",
+                            1, &error_abort);
+    qemu_opt_set(opts, "backend", "serial", &error_abort);
+    qemu_opt_set(opts, "path", ptsname(master), &error_abort);
+    chr = qemu_chr_new_from_opts(opts, NULL, &error_abort);
+    qemu_chr_fe_init(&be, chr, &error_abort);
+
+    for (int i = 0; i < ARRAY_SIZE(rates); i++) {
+        QEMUSerialSetParams params = {
+            .speed = rates[i].asked, .parity = 'N', .data_bits = 8,
+            .stop_bits = 1,
+        };
+
+        g_assert_cmpint(qemu_chr_fe_ioctl(&be, CHR_IOCTL_SERIAL_SET_PARAMS,
+                                          &params), ==, 0);
+        g_assert_cmpint(tcgetattr(slave, &t), ==, 0);
+        g_assert_cmpint(cfgetospeed(&t), ==, rates[i].speed);
+    }
+
+    qemu_chr_fe_deinit(&be, true);
+    qemu_opts_del(opts);
+    close(slave);
+    close(master);
+}
+#endif
+
 #if defined(HAVE_CHARDEV_PARALLEL) && !defined(WIN32)
 static void char_parallel_test(void)
 {
@@ -2025,6 +2082,9 @@ int main(int argc, char **argv)
 #if defined(HAVE_CHARDEV_SERIAL) && !defined(WIN32)
     g_test_add_func("/char/serial", char_serial_test);
     g_test_add_func("/char/serial/no-ctty", char_serial_noctty_test);
+#endif
+#if defined(HAVE_CHARDEV_SERIAL) && defined(CONFIG_LINUX)
+    g_test_add_func("/char/serial/speed", char_serial_speed_test);
 #endif
 #if defined(HAVE_CHARDEV_PARALLEL) && !defined(WIN32)
     g_test_add_func("/char/parallel", char_parallel_test);

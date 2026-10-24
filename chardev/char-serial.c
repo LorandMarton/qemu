@@ -58,11 +58,75 @@ static bool serial_chr_open(Chardev *chr, ChardevBackend *backend, Error **errp)
     || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) \
     || defined(__GLIBC__) || defined(__APPLE__)
 
+static const struct {
+    int rate;
+    speed_t speed;
+} tty_speeds[] = {
+    { 50, B50 },
+    { 75, B75 },
+    { 110, B110 },
+    { 134, B134 },
+    { 150, B150 },
+    { 200, B200 },
+    { 300, B300 },
+    { 600, B600 },
+    { 1200, B1200 },
+    { 1800, B1800 },
+    { 2400, B2400 },
+    { 4800, B4800 },
+    { 9600, B9600 },
+    { 19200, B19200 },
+    { 38400, B38400 },
+    /* Non-Posix values follow. They may be unsupported on some systems. */
+    { 57600, B57600 },
+    { 115200, B115200 },
+#ifdef B230400
+    { 230400, B230400 },
+#endif
+#ifdef B460800
+    { 460800, B460800 },
+#endif
+#ifdef B500000
+    { 500000, B500000 },
+#endif
+#ifdef B576000
+    { 576000, B576000 },
+#endif
+#ifdef B921600
+    { 921600, B921600 },
+#endif
+#ifdef B1000000
+    { 1000000, B1000000 },
+#endif
+#ifdef B1152000
+    { 1152000, B1152000 },
+#endif
+#ifdef B1500000
+    { 1500000, B1500000 },
+#endif
+#ifdef B2000000
+    { 2000000, B2000000 },
+#endif
+#ifdef B2500000
+    { 2500000, B2500000 },
+#endif
+#ifdef B3000000
+    { 3000000, B3000000 },
+#endif
+#ifdef B3500000
+    { 3500000, B3500000 },
+#endif
+#ifdef B4000000
+    { 4000000, B4000000 },
+#endif
+};
+
 static void tty_serial_init(int fd, int speed,
                             int parity, int data_bits, int stop_bits)
 {
     struct termios tty = {0};
-    speed_t spd;
+    speed_t spd = B115200;
+    int diff = INT_MAX;
 
 #if 0
     printf("tty_serial_init: speed=%d parity=%c data=%d stop=%d\n",
@@ -70,74 +134,14 @@ static void tty_serial_init(int fd, int speed,
 #endif
     tcgetattr(fd, &tty);
 
-#define check_speed(val) \
-    if (speed <= val) {  \
-        spd = B##val;    \
-        goto done;       \
+    /* The standard rate nearest to the guest's, which its divisor rounds */
+    for (int i = 0; i < ARRAY_SIZE(tty_speeds); i++) {
+        if (abs(speed - tty_speeds[i].rate) < diff) {
+            diff = abs(speed - tty_speeds[i].rate);
+            spd = tty_speeds[i].speed;
+        }
     }
 
-    speed = speed * 10 / 11;
-    check_speed(50);
-    check_speed(75);
-    check_speed(110);
-    check_speed(134);
-    check_speed(150);
-    check_speed(200);
-    check_speed(300);
-    check_speed(600);
-    check_speed(1200);
-    check_speed(1800);
-    check_speed(2400);
-    check_speed(4800);
-    check_speed(9600);
-    check_speed(19200);
-    check_speed(38400);
-    /* Non-Posix values follow. They may be unsupported on some systems. */
-    check_speed(57600);
-    check_speed(115200);
-#ifdef B230400
-    check_speed(230400);
-#endif
-#ifdef B460800
-    check_speed(460800);
-#endif
-#ifdef B500000
-    check_speed(500000);
-#endif
-#ifdef B576000
-    check_speed(576000);
-#endif
-#ifdef B921600
-    check_speed(921600);
-#endif
-#ifdef B1000000
-    check_speed(1000000);
-#endif
-#ifdef B1152000
-    check_speed(1152000);
-#endif
-#ifdef B1500000
-    check_speed(1500000);
-#endif
-#ifdef B2000000
-    check_speed(2000000);
-#endif
-#ifdef B2500000
-    check_speed(2500000);
-#endif
-#ifdef B3000000
-    check_speed(3000000);
-#endif
-#ifdef B3500000
-    check_speed(3500000);
-#endif
-#ifdef B4000000
-    check_speed(4000000);
-#endif
-    spd = B115200;
-
-#undef check_speed
- done:
     cfsetispeed(&tty, spd);
     cfsetospeed(&tty, spd);
 
