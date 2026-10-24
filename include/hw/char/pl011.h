@@ -52,6 +52,11 @@ struct PL011State {
     Clock *clk;
     bool migrate_clk;
     bool logged_disabled_uart;
+    /* CTS input (has-cts) and the TX FIFO it holds back */
+    bool has_cts;
+    bool cts;
+    uint8_t tx_fifo[PL011_FIFO_DEPTH];
+    int32_t tx_count;
     const unsigned char *id;
     /*
      * Since some users embed this struct directly, we must

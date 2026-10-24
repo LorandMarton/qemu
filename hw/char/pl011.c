@@ -54,6 +54,7 @@ DeviceState *pl011_create(hwaddr addr, qemu_irq irq, Chardev *chr)
 #define PL011_FLAG_RXFF 0x40
 #define PL011_FLAG_TXFF 0x20
 #define PL011_FLAG_RXFE 0x10
+#define PL011_FLAG_BUSY 0x08
 #define PL011_FLAG_DCD  0x04
 #define PL011_FLAG_DSR  0x02
 #define PL011_FLAG_CTS  0x01
@@ -81,6 +82,7 @@ DeviceState *pl011_create(hwaddr addr, qemu_irq irq, Chardev *chr)
 #define LCR_BRK     (1 << 0)
 
 /* Control Register, UARTCR */
+#define CR_CTSEN    (1 << 15)
 #define CR_OUT2     (1 << 13)
 #define CR_OUT1     (1 << 12)
 #define CR_RTS      (1 << 11)
@@ -169,8 +171,10 @@ static inline void pl011_reset_rx_fifo(PL011State *s)
 
 static inline void pl011_reset_tx_fifo(PL011State *s)
 {
+    s->tx_count = 0;
+
     /* Reset FIFO flags */
-    s->flags &= ~PL011_FLAG_TXFF;
+    s->flags &= ~(PL011_FLAG_TXFF | PL011_FLAG_BUSY);
     s->flags |= PL011_FLAG_TXFE;
 }
 
@@ -224,6 +228,78 @@ static void pl011_loopback_tx(PL011State *s, uint32_t value)
     pl011_fifo_rx_put(s, value);
 }
 
+static void pl011_tx_send(PL011State *s, uint8_t data)
+{
+    /*
+     * XXX this blocks entire thread. Rewrite to use
+     * qemu_chr_fe_write and background I/O callbacks
+     */
+    qemu_chr_fe_write_all(&s->chr, &data, 1);
+    pl011_loopback_tx(s, data);
+}
+
+/* CTS flow control, only when the board wires the CTS input (has-cts) */
+static bool pl011_tx_held(PL011State *s)
+{
+    return s->has_cts && (s->cr & CR_CTSEN) &&
+           !(s->flags & PL011_FLAG_CTS);
+}
+
+static void pl011_tx_flags(PL011State *s)
+{
+    s->flags &= ~(PL011_FLAG_TXFF | PL011_FLAG_TXFE | PL011_FLAG_BUSY);
+    if (s->tx_count == 0) {
+        s->flags |= PL011_FLAG_TXFE;
+    } else {
+        s->flags |= PL011_FLAG_BUSY;
+        s->int_level &= ~INT_TX;
+    }
+    if (s->tx_count >= pl011_get_fifo_depth(s)) {
+        s->flags |= PL011_FLAG_TXFF;
+    }
+}
+
+static void pl011_tx_drain(PL011State *s)
+{
+    int i;
+
+    if (!s->tx_count || pl011_tx_held(s)) {
+        return;
+    }
+    for (i = 0; i < s->tx_count; i++) {
+        pl011_tx_send(s, s->tx_fifo[i]);
+    }
+    s->tx_count = 0;
+    pl011_tx_flags(s);
+    s->int_level |= INT_TX;
+}
+
+/* FR.CTS from the nUARTCTS input, or from CR.RTS in loopback mode */
+static void pl011_update_cts(PL011State *s)
+{
+    bool cts;
+
+    if (s->cr & CR_LBE) {
+        cts = s->cr & CR_RTS;
+    } else {
+        cts = s->has_cts && s->cts;
+    }
+    if (cts != !!(s->flags & PL011_FLAG_CTS)) {
+        s->flags ^= PL011_FLAG_CTS;
+        s->int_level |= INT_CTS;
+    }
+    pl011_tx_drain(s);
+    pl011_update(s);
+}
+
+static void pl011_cts_in(void *opaque, int n, int level)
+{
+    PL011State *s = opaque;
+
+    s->cts = level;
+    pl011_update_cts(s);
+}
+
 static void pl011_write_txdata(PL011State *s, uint8_t data)
 {
     if (!(s->cr & CR_UARTEN)) {
@@ -250,12 +326,20 @@ static void pl011_write_txdata(PL011State *s, uint8_t data)
                       "PL011 data written to disabled TX UART\n");
     }
 
-    /*
-     * XXX this blocks entire thread. Rewrite to use
-     * qemu_chr_fe_write and background I/O callbacks
-     */
-    qemu_chr_fe_write_all(&s->chr, &data, 1);
-    pl011_loopback_tx(s, data);
+    if (pl011_tx_held(s)) {
+        /*
+         * Hardware flow control with nUARTCTS deasserted: the
+         * byte stays in the TX FIFO until CTS is asserted again.
+         */
+        if (s->tx_count < pl011_get_fifo_depth(s)) {
+            s->tx_fifo[s->tx_count++] = data;
+        }
+        pl011_tx_flags(s);
+        pl011_update(s);
+        return;
+    }
+
+    pl011_tx_send(s, data);
     s->int_level |= INT_TX;
     pl011_update(s);
 }
@@ -522,6 +606,9 @@ static void pl011_write(void *opaque, hwaddr offset,
         }
         s->cr = value;
         pl011_loopback_mdmctrl(s);
+        if (s->has_cts) {
+            pl011_update_cts(s);
+        }
         break;
     case 13: /* UARTIFS */
         s->ifl = value;
@@ -630,7 +717,8 @@ static int pl011_post_load(void *opaque, int version_id)
 
     /* Sanity-check input state */
     if (s->read_pos >= ARRAY_SIZE(s->read_fifo) ||
-        s->read_count > ARRAY_SIZE(s->read_fifo)) {
+        s->read_count > ARRAY_SIZE(s->read_fifo) ||
+        s->tx_count < 0 || s->tx_count > ARRAY_SIZE(s->tx_fifo)) {
         return -1;
     }
 
@@ -650,6 +738,26 @@ static int pl011_post_load(void *opaque, int version_id)
 
     return 0;
 }
+
+static bool pl011_cts_needed(void *opaque)
+{
+    PL011State *s = PL011(opaque);
+
+    return s->has_cts;
+}
+
+static const VMStateDescription vmstate_pl011_cts = {
+    .name = "pl011/cts",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = pl011_cts_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(cts, PL011State),
+        VMSTATE_UINT8_ARRAY(tx_fifo, PL011State, PL011_FIFO_DEPTH),
+        VMSTATE_INT32(tx_count, PL011State),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static const VMStateDescription vmstate_pl011 = {
     .name = "pl011",
@@ -677,6 +785,7 @@ static const VMStateDescription vmstate_pl011 = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_pl011_clock,
+        &vmstate_pl011_cts,
         NULL
     }
 };
@@ -684,6 +793,8 @@ static const VMStateDescription vmstate_pl011 = {
 static const Property pl011_properties[] = {
     DEFINE_PROP_CHR("chardev", PL011State, chr),
     DEFINE_PROP_BOOL("migrate-clk", PL011State, migrate_clk, true),
+    /* FR.CTS and CR.CTSEN follow the "cts" GPIO input */
+    DEFINE_PROP_BOOL("has-cts", PL011State, has_cts, false),
 };
 
 static void pl011_init(Object *obj)
@@ -700,6 +811,10 @@ static void pl011_init(Object *obj)
 
     s->clk = qdev_init_clock_in(DEVICE(obj), "clk", pl011_clock_update, s,
                                 ClockUpdate);
+
+    /* CTS reads asserted until the board drives the input */
+    s->cts = true;
+    qdev_init_gpio_in_named(DEVICE(obj), pl011_cts_in, "cts", 1);
 
     s->id = pl011_id_arm;
 }
@@ -744,7 +859,7 @@ static void pl011_reset(DeviceState *dev)
     s->read_trigger = 1;
     s->ifl = 0x12;
     s->cr = 0x300;
-    s->flags = 0;
+    s->flags = (s->has_cts && s->cts) ? PL011_FLAG_CTS : 0;
     s->logged_disabled_uart = false;
     pl011_reset_rx_fifo(s);
     pl011_reset_tx_fifo(s);
