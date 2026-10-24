@@ -49,6 +49,7 @@ sdcard_set_block_count(uint32_t cnt) "block cnt 0x%"PRIx32
 sdcard_inserted(bool readonly) "read_only: %u"
 sdcard_ejected(void) ""
 sdcard_erase(uint32_t first, uint32_t last) "addr first 0x%" PRIx32" last 0x%" PRIx32
+sdcard_erase_blocks(uint64_t addr, uint64_t len, bool ones) "addr 0x%" PRIx64 " size 0x%" PRIx64 " ones %d"
 sdcard_lock(void) ""
 sdcard_unlock(void) ""
 sdcard_req_addr(uint32_t req_arg, uint64_t addr) "req 0x%" PRIx32 " addr 0x%" PRIx64

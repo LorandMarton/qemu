@@ -1267,6 +1267,39 @@ static void sd_blk_write(SDState *sd, uint64_t addr, uint32_t len)
     }
 }
 
+/*
+ * Erased blocks read as the card says: SCR DATA_STAT_AFTER_ERASE for SD,
+ * EXT_CSD ERASED_MEM_CONT for eMMC. Zeroes need no data on the host side.
+ */
+static void sd_blk_erase(SDState *sd, uint64_t addr, uint64_t len)
+{
+    bool ones = sd_is_emmc(sd) ? sd->ext_csd[EXT_CSD_ERASED_MEM_CONT] & 1
+                               : sd->scr[1] & 0x80;
+    uint64_t end;
+    int ret = 0;
+
+    trace_sdcard_erase_blocks(addr, len, ones);
+    if (!sd->blk) {
+        return;
+    }
+    addr += sd_part_offset(sd);
+    end = addr + len;
+    if (!ones) {
+        ret = blk_pwrite_zeroes(sd->blk, addr, len, BDRV_REQ_MAY_UNMAP);
+    } else {
+        g_autofree uint8_t *buf = g_malloc(SD_MB_BUF_SIZE);
+
+        memset(buf, 0xff, SD_MB_BUF_SIZE);
+        for (; addr < end && ret >= 0; addr += SD_MB_BUF_SIZE) {
+            ret = blk_pwrite(sd->blk, addr, MIN(end - addr, SD_MB_BUF_SIZE),
+                             buf, 0);
+        }
+    }
+    if (ret < 0) {
+        fprintf(stderr, "sd_blk_erase: write error on host side\n");
+    }
+}
+
 static bool rpmb_calc_hmac(SDState *sd, const RPMBDataFrame *frame,
                            unsigned int num_blocks, uint8_t *mac)
 {
@@ -1488,19 +1521,20 @@ static void sd_erase(SDState *sd)
     sd->erase_end = INVALID_ADDRESS;
     sd->csd[14] |= 0x40;
 
-    memset(sd->data, 0xff, erase_len);
+    if (!sdsc) {
+        sd_blk_erase(sd, erase_start, erase_end + erase_len - erase_start);
+        return;
+    }
     for (erase_addr = erase_start; erase_addr <= erase_end;
          erase_addr += erase_len) {
-        if (sdsc) {
-            /* Only SDSC cards support write protect groups */
-            wpnum = sd_addr_to_wpnum(erase_addr);
-            assert(wpnum < sd->wp_group_bits);
-            if (test_bit(wpnum, sd->wp_group_bmap)) {
-                sd->card_status |= WP_ERASE_SKIP;
-                continue;
-            }
+        /* Only SDSC cards support write protect groups */
+        wpnum = sd_addr_to_wpnum(erase_addr);
+        assert(wpnum < sd->wp_group_bits);
+        if (test_bit(wpnum, sd->wp_group_bmap)) {
+            sd->card_status |= WP_ERASE_SKIP;
+            continue;
         }
-        sd_blk_write(sd, erase_addr, erase_len);
+        sd_blk_erase(sd, erase_addr, erase_len);
     }
 }
 

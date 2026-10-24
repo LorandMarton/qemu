@@ -20,6 +20,7 @@
 #include "libqtest.h"
 #include "libqtest-single.h"
 #include "libqos/sdhci-cmd.h"
+#include "qemu/cutils.h"
 
 #define NPCM7XX_REG_SIZE 0x100
 #define NPCM7XX_MMC_BA 0xF0842000
@@ -176,6 +177,38 @@ static void test_reset(void)
     qtest_quit(qts);
 }
 
+/* Check an erase leaves the blocks as the SCR says (DATA_STAT_AFTER_ERASE 0) */
+static void test_erase_sd(void)
+{
+    QTestState *qts = setup_sd_card();
+    uint8_t buf[2 * NPCM7XX_BLK_SIZE];
+    int fd, ret;
+
+    memset(buf, 0xa5, sizeof(buf));
+    fd = open(sd_path, O_RDWR);
+    g_assert(fd >= 0);
+    ret = pwrite(fd, buf, sizeof(buf), 2 * NPCM7XX_BLK_SIZE);
+    g_assert_cmpint(ret, ==, sizeof(buf));
+
+    /* Standard capacity card: byte addresses; erase block 2 only */
+    sdhci_cmd_regs(qts, NPCM7XX_MMC_BA, 0, 0, 2 * NPCM7XX_BLK_SIZE, 0,
+                   (32 << 8) | SDHC_CMD_RESPONSE);
+    sdhci_cmd_regs(qts, NPCM7XX_MMC_BA, 0, 0, 2 * NPCM7XX_BLK_SIZE, 0,
+                   (33 << 8) | SDHC_CMD_RESPONSE);
+    sdhci_cmd_regs(qts, NPCM7XX_MMC_BA, 0, 0, 0, 0,
+                   (38 << 8) | SDHC_CMD_RESPONSE);
+
+    ret = pread(fd, buf, sizeof(buf), 2 * NPCM7XX_BLK_SIZE);
+    g_assert_cmpint(ret, ==, sizeof(buf));
+    close(fd);
+    g_assert(buffer_is_zero(buf, NPCM7XX_BLK_SIZE));
+    for (int i = NPCM7XX_BLK_SIZE; i < sizeof(buf); i++) {
+        g_assert_cmphex(buf[i], ==, 0xa5);
+    }
+
+    qtest_quit(qts);
+}
+
 static void drive_destroy(void)
 {
     unlink(sd_path);
@@ -212,6 +245,7 @@ int main(int argc, char **argv)
     qtest_add_func("npcm7xx_sdhci/reset", test_reset);
     qtest_add_func("npcm7xx_sdhci/write_sd", test_write_sd);
     qtest_add_func("npcm7xx_sdhci/read_sd", test_read_sd);
+    qtest_add_func("npcm7xx_sdhci/erase_sd", test_erase_sd);
 
     ret = g_test_run();
     drive_destroy();
