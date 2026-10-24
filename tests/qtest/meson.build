@@ -287,7 +287,8 @@ qtests_aarch64 = \
                                                     'bcm2835-property-test',
                                                     'bcm2838-cprman-test',
                                                     'bcm2838-gpio-test',
-                                                    'bcm2838-spi-test'] : []) +  \
+                                                    'bcm2838-spi-test',
+                                                    'bcm2838-usb-test'] : []) +  \
   (config_all_devices.has_key('CONFIG_RASPI') and host_os != 'windows' and
    config_all_devices.has_key('CONFIG_I2C_CHARDEV') ? ['i2c-chardev-test'] : []) + \
   (config_all_devices.has_key('CONFIG_RASPI') and host_os != 'windows' and

@@ -37,6 +37,7 @@
 #define GIC_SPI_INTERRUPT_PCI_INT_A    143
 #define GIC_SPI_INTERRUPT_GENET_A      157
 #define GIC_SPI_INTERRUPT_GENET_B      158
+#define GIC_SPI_INTERRUPT_XHCI         176
 
 
 /* GPU (legacy) DMA interrupts */
@@ -67,6 +68,9 @@
 #define BCM2838_SPI3_OFFSET     0x204600
 #define BCM2838_SPI_STRIDE      0x200
 #define BCM2838_NUM_EXTRA_SPIS  4
+/* BCM2711 built-in xHCI (used with otg_mode=1, as on the CM4 IO board) */
+#define BCM2838_XHCI_OFFSET     0x9c0000
+#define BCM2838_XHCI_SIZE       0x100000
 
 #define TYPE_BCM2838_PERIPHERALS "bcm2838-peripherals"
 OBJECT_DECLARE_TYPE(BCM2838PeripheralState, BCM2838PeripheralClass,
@@ -88,6 +92,7 @@ struct BCM2838PeripheralState {
     BCM2838PcieHostState pcie_host;
     BCM2838GenetState genet;
     BCM2838GpioState gpio;
+    DeviceState *xhci;
     /* UART2..UART5; they share the UART0 interrupt (uart_irq_orgate) */
     PL011State uarts[BCM2838_NUM_EXTRA_UARTS];
     MemoryRegion uart_mr[BCM2838_NUM_EXTRA_UARTS];

@@ -301,6 +301,10 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps->genet), 1,
                        qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_GENET_B));
 
+    /* xHCI */
+    sysbus_connect_irq(SYS_BUS_DEVICE(ps->xhci), 0,
+                       qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_XHCI));
+
     /* Pass through inbound GPIO lines to the GIC */
     qdev_init_gpio_in(dev, bcm2838_gic_set_irq, GIC_NUM_IRQS);
 

@@ -350,6 +350,7 @@ config RASPI
     select PL011 # UART
     select SDHCI
     select USB_DWC2
+    select USB_XHCI_SYSBUS # BCM2711 built-in xHCI
     select BCM2835_SPI
     select BCM2835_I2C
 

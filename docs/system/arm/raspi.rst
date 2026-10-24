@@ -43,6 +43,8 @@ Implemented devices
  * PCIe Root Complex (raspi4b, raspicm4)
  * GENET Ethernet Controller (raspi4b, raspicm4)
  * PL011 UART2 to UART5 (raspi4b, raspicm4)
+ * xHCI USB host controller, interface version 1.1 with 64-byte contexts,
+   one USB 2.0 port (raspi4b, raspicm4)
  * AXI bridge (ASB) controls of the power domains (raspi4b, raspicm4)
 
 Missing devices

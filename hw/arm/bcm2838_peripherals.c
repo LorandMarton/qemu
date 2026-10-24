@@ -11,6 +11,7 @@
 #include "qemu/module.h"
 #include "hw/arm/raspi_platform.h"
 #include "hw/arm/bcm2838_peripherals.h"
+#include "hw/usb/xhci.h"
 #include "hw/core/qdev-properties-system.h"
 #include "system/system.h"
 
@@ -361,6 +362,25 @@ static void bcm2838_peripherals_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(&s_base->peri_mr, RPIVID_ASB_OFFSET,
                     sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->rpivid_asb), 0));
 
+    /*
+     * xHCI: one USB 2.0 root port and no USB 3 port, as Linux reports it on
+     * the CM4 ("USB3 root hub has no ports", usb1 maxchild 1). Interface
+     * version 1.1 with 64-byte contexts ("hci version 0x110", HCCPARAMS1.CSZ
+     * in "hcc params 0x0220fe65"). The interrupt is connected by the SoC
+     * (bcm2838.c).
+     */
+    s->xhci = qdev_new(TYPE_XHCI_SYSBUS);
+    object_property_add_child(OBJECT(s), "xhci", OBJECT(s->xhci));
+    qdev_prop_set_uint32(s->xhci, "p2", 1);
+    qdev_prop_set_uint32(s->xhci, "p3", 0);
+    qdev_prop_set_uint32(s->xhci, "intrs", 1);
+    qdev_prop_set_uint16(s->xhci, "version", 0x110);
+    qdev_prop_set_bit(s->xhci, "context-64", true);
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(s->xhci), errp)) {
+        return;
+    }
+    memory_region_add_subregion(&s_base->peri_mr, BCM2838_XHCI_OFFSET,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(s->xhci), 0));
 }
 
 static void bcm2838_peripherals_class_init(ObjectClass *oc, const void *data)
