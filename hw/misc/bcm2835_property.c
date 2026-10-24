@@ -419,6 +419,58 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
             resplen = 4;
             break;
 
+        /*
+         * Expander GPIOs 128..135 (BT_ON, WL_ON, PWR_LED_OFF, ANT1,
+         * VDD_SD_IO_SEL, CAM_GPIO, SD_PWR_ON, ANT2 on the CM4). The first
+         * word returns 0 on success, the GPIO number is rejected otherwise.
+         */
+        case RPI_FWREQ_GET_GPIO_CONFIG:
+        case RPI_FWREQ_SET_GPIO_CONFIG:
+        case RPI_FWREQ_GET_GPIO_STATE:
+        case RPI_FWREQ_SET_GPIO_STATE:
+        {
+            uint32_t gpio = ldl_le_phys(&s->dma_as, value + 12) - 128;
+
+            resplen = tag == RPI_FWREQ_GET_GPIO_CONFIG ? 20 :
+                      tag == RPI_FWREQ_SET_GPIO_CONFIG ? 24 : 8;
+            if (gpio >= ARRAY_SIZE(s->exp_gpio_state)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "bcm2835_property: bad expander GPIO %u\n",
+                              gpio + 128);
+                break;
+            }
+            switch (tag) {
+            case RPI_FWREQ_GET_GPIO_CONFIG:
+                stl_le_phys(&s->dma_as, value + 16, s->exp_gpio_dir[gpio]);
+                stl_le_phys(&s->dma_as, value + 20, s->exp_gpio_pol[gpio]);
+                stl_le_phys(&s->dma_as, value + 24,
+                            s->exp_gpio_term_en[gpio]);
+                stl_le_phys(&s->dma_as, value + 28,
+                            s->exp_gpio_pull_up[gpio]);
+                break;
+            case RPI_FWREQ_SET_GPIO_CONFIG:
+                s->exp_gpio_dir[gpio] = ldl_le_phys(&s->dma_as, value + 16);
+                s->exp_gpio_pol[gpio] = ldl_le_phys(&s->dma_as, value + 20);
+                s->exp_gpio_term_en[gpio] =
+                    ldl_le_phys(&s->dma_as, value + 24);
+                s->exp_gpio_pull_up[gpio] =
+                    ldl_le_phys(&s->dma_as, value + 28);
+                if (s->exp_gpio_dir[gpio]) {
+                    s->exp_gpio_state[gpio] =
+                        !!ldl_le_phys(&s->dma_as, value + 32);
+                }
+                break;
+            case RPI_FWREQ_GET_GPIO_STATE:
+                stl_le_phys(&s->dma_as, value + 16, s->exp_gpio_state[gpio]);
+                break;
+            case RPI_FWREQ_SET_GPIO_STATE:
+                s->exp_gpio_state[gpio] = !!ldl_le_phys(&s->dma_as, value + 16);
+                break;
+            }
+            stl_le_phys(&s->dma_as, value + 12, 0);
+            break;
+        }
+
         case RPI_FWREQ_VCHIQ_INIT:
             stl_le_phys(&s->dma_as,
                         value + offsetof(rpi_firmware_prop_request_t, payload),
@@ -596,13 +648,18 @@ static const MemoryRegionOps bcm2835_property_ops = {
 
 static const VMStateDescription vmstate_bcm2835_property = {
     .name = TYPE_BCM2835_PROPERTY,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_MACADDR(macaddr, BCM2835PropertyState),
         VMSTATE_UINT32(addr, BCM2835PropertyState),
         VMSTATE_BOOL(pending, BCM2835PropertyState),
         VMSTATE_UINT32_ARRAY(clk_rate, BCM2835PropertyState, 16),
+        VMSTATE_UINT32_ARRAY(exp_gpio_dir, BCM2835PropertyState, 8),
+        VMSTATE_UINT32_ARRAY(exp_gpio_pol, BCM2835PropertyState, 8),
+        VMSTATE_UINT32_ARRAY(exp_gpio_term_en, BCM2835PropertyState, 8),
+        VMSTATE_UINT32_ARRAY(exp_gpio_pull_up, BCM2835PropertyState, 8),
+        VMSTATE_UINT32_ARRAY(exp_gpio_state, BCM2835PropertyState, 8),
         VMSTATE_END_OF_LIST()
     }
 };

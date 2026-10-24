@@ -26,6 +26,10 @@
 #define TAG_SET_CLOCK_RATE  0x00038002
 #define CLK_ARM             3
 #define CLK_CORE            4
+#define TAG_GET_GPIO_STATE  0x00030041
+#define TAG_SET_GPIO_STATE  0x00038041
+#define TAG_GET_GPIO_CONFIG 0x00030043
+#define TAG_SET_GPIO_CONFIG 0x00038043
 
 /* start4.elf of 2026-09-14, as a CM4 reports it */
 #define FW_REVISION         1789397370
@@ -127,6 +131,48 @@ static void test_core_clock(void)
     unlink(path);
 }
 
+/*
+ * The firmware GPIO expander, lines 128..135: the first word of the
+ * response is 0 for a line it has, the others its state or configuration.
+ */
+static void test_gpio_expander(void)
+{
+    QTestState *qts = qtest_init("-M raspi4b");
+
+    /* 130: an output, active high, driven high */
+    qtest_writel(qts, BUF_ADDR + 20, 130);
+    qtest_writel(qts, BUF_ADDR + 24, 1);
+    qtest_writel(qts, BUF_ADDR + 28, 0);
+    qtest_writel(qts, BUF_ADDR + 32, 0);
+    qtest_writel(qts, BUF_ADDR + 36, 0);
+    qtest_writel(qts, BUF_ADDR + 40, 1);
+    property(qts, TAG_SET_GPIO_CONFIG, 24);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 20), ==, 0);
+
+    qtest_writel(qts, BUF_ADDR + 20, 130);
+    g_assert_cmpuint(property(qts, TAG_GET_GPIO_STATE, 8), ==, 8);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 20), ==, 0);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 24), ==, 1);
+
+    qtest_writel(qts, BUF_ADDR + 20, 130);
+    qtest_writel(qts, BUF_ADDR + 24, 0);
+    property(qts, TAG_SET_GPIO_STATE, 8);
+    qtest_writel(qts, BUF_ADDR + 20, 130);
+    property(qts, TAG_GET_GPIO_STATE, 8);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 24), ==, 0);
+
+    qtest_writel(qts, BUF_ADDR + 20, 130);
+    g_assert_cmpuint(property(qts, TAG_GET_GPIO_CONFIG, 20), ==, 20);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 20), ==, 0);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 24), ==, 1);
+
+    /* no line 136 */
+    qtest_writel(qts, BUF_ADDR + 20, 136);
+    property(qts, TAG_GET_GPIO_STATE, 8);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 20), ==, 136);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -134,6 +180,7 @@ int main(int argc, char **argv)
     qtest_add_func("/bcm2835-property/firmware/default", test_default);
     qtest_add_func("/bcm2835-property/firmware/build", test_build);
     qtest_add_func("/bcm2835-property/core-clock", test_core_clock);
+    qtest_add_func("/bcm2835-property/gpio-expander", test_gpio_expander);
 
     return g_test_run();
 }
