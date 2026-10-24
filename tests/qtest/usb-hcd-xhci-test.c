@@ -15,9 +15,13 @@
 
 /* capability registers */
 #define XHCI_CAPLENGTH          0x00
+#define XHCI_HCIVERSION         0x02
 #define XHCI_HCSPARAMS1         0x04
+#define XHCI_HCCPARAMS1         0x10
+#define HCCPARAMS1_CSZ          (1 << 2)
 #define XHCI_DBOFF              0x14
 #define XHCI_RTSOFF             0x18
+#define XHCI_HCCPARAMS2         0x1c
 /* operational registers */
 #define XHCI_USBCMD             0x00
 #define XHCI_USBSTS             0x04
@@ -72,9 +76,10 @@ typedef struct XHCITest {
     QPCIBus *bus;
     struct qhc hc;
     uint32_t oper, runtime, doorbell;
-    uint64_t cmd_ring, event_ring, input_ctx;
+    uint64_t cmd_ring, event_ring, input_ctx, dev_ctx;
     unsigned int cmd_idx, event_idx;
     unsigned int port, slot;
+    unsigned int ctx_size;      /* 32 or 64 bytes */
 } XHCITest;
 
 static void wait_device_deleted_event(QTestState *qtest, const char *id)
@@ -244,10 +249,11 @@ static unsigned int xhci_command(XHCITest *x, uint64_t parameter,
 }
 
 /*
- * Start qemu-xhci with one USB device, run the controller and bring the
- * device to the Addressed state.
+ * Start qemu-xhci (with @xhci_opts) with one USB device, run the controller
+ * and bring the device to the Addressed state.
  */
-static void xhci_test_start(XHCITest *x, const char *usb_device)
+static void xhci_test_start_opts(XHCITest *x, const char *xhci_opts,
+                                 const char *usb_device)
 {
     uint64_t dcbaa, erst, ep0_ring;
     unsigned int maxports;
@@ -255,7 +261,8 @@ static void xhci_test_start(XHCITest *x, const char *usb_device)
     memset(x, 0, sizeof(*x));
     /* pit=off: a long clock step would run the i8254 timer all the way */
     x->qts = qtest_initf("-machine pc,pit=off -nodefaults "
-                         "-device qemu-xhci,id=xhci,addr=04.0 %s", usb_device);
+                         "-device qemu-xhci,id=xhci,addr=04.0%s %s",
+                         xhci_opts, usb_device);
     pc_alloc_init(&x->alloc, x->qts, ALLOC_NO_FLAGS);
     x->bus = qpci_new_pc(x->qts, NULL);
     qusb_pci_init_one(x->bus, &x->hc, QPCI_DEVFN(4, 0), 0);
@@ -264,6 +271,7 @@ static void xhci_test_start(XHCITest *x, const char *usb_device)
     x->runtime = xhci_readl(x, XHCI_RTSOFF) & ~0x1f;
     x->doorbell = xhci_readl(x, XHCI_DBOFF) & ~0x3;
     maxports = xhci_readl(x, XHCI_HCSPARAMS1) >> 24;
+    x->ctx_size = xhci_readl(x, XHCI_HCCPARAMS1) & HCCPARAMS1_CSZ ? 64 : 32;
 
     xhci_writel(x, x->oper + XHCI_USBCMD, USBCMD_HCRST);
     g_assert_false(xhci_readl(x, x->oper + XHCI_USBCMD) & USBCMD_HCRST);
@@ -297,20 +305,26 @@ static void xhci_test_start(XHCITest *x, const char *usb_device)
     }
 
     x->slot = xhci_command(x, 0, TRB_TYPE(CR_ENABLE_SLOT));
-    qtest_writeq(x->qts, dcbaa + 8 * x->slot, xhci_alloc_page(x));
+    x->dev_ctx = xhci_alloc_page(x);
+    qtest_writeq(x->qts, dcbaa + 8 * x->slot, x->dev_ctx);
 
     /* input control context: add slot and ep0 */
     qtest_writel(x->qts, x->input_ctx + 0x04, 0x3);
     /* slot context: one context entry, root hub port */
-    qtest_writel(x->qts, x->input_ctx + 0x20, 1 << 27);
-    qtest_writel(x->qts, x->input_ctx + 0x24, (x->port + 1) << 16);
+    qtest_writel(x->qts, x->input_ctx + x->ctx_size, 1 << 27);
+    qtest_writel(x->qts, x->input_ctx + x->ctx_size + 4, (x->port + 1) << 16);
     /* ep0 context */
     ep0_ring = xhci_alloc_page(x);
-    qtest_writel(x->qts, x->input_ctx + 0x44,
+    qtest_writel(x->qts, x->input_ctx + 2 * x->ctx_size + 4,
                  (64 << 16) | (EP_TYPE_CONTROL << 3));
-    qtest_writeq(x->qts, x->input_ctx + 0x48, ep0_ring | 1);
+    qtest_writeq(x->qts, x->input_ctx + 2 * x->ctx_size + 8, ep0_ring | 1);
     xhci_command(x, x->input_ctx,
                  TRB_TYPE(CR_ADDRESS_DEVICE) | (x->slot << 24));
+}
+
+static void xhci_test_start(XHCITest *x, const char *usb_device)
+{
+    xhci_test_start_opts(x, "", usb_device);
 }
 
 /* Returns the address of the transfer ring. */
@@ -319,12 +333,12 @@ static uint64_t xhci_configure_ep(XHCITest *x, unsigned int epid,
                                   unsigned int max_packet)
 {
     uint64_t ring = xhci_alloc_page(x);
-    uint64_t epctx = x->input_ctx + 0x20 * (epid + 1);
+    uint64_t epctx = x->input_ctx + x->ctx_size * (epid + 1);
 
     qtest_memset(x->qts, x->input_ctx, 0, 0x1000);
     qtest_writel(x->qts, x->input_ctx + 0x04, (1 << epid) | 1);
-    qtest_writel(x->qts, x->input_ctx + 0x20, epid << 27);
-    qtest_writel(x->qts, x->input_ctx + 0x24, (x->port + 1) << 16);
+    qtest_writel(x->qts, x->input_ctx + x->ctx_size, epid << 27);
+    qtest_writel(x->qts, x->input_ctx + x->ctx_size + 4, (x->port + 1) << 16);
     qtest_writel(x->qts, epctx + 0x00, interval << 16);
     qtest_writel(x->qts, epctx + 0x04, (max_packet << 16) | (type << 3));
     qtest_writeq(x->qts, epctx + 0x08, ring | 1);
@@ -469,13 +483,77 @@ static void test_xhci_isoch_ep_type_mismatch(void)
 }
 
 /*
+ * With 64-byte contexts the controller finds the input contexts and writes
+ * the device context at 64-byte steps.
+ */
+/*
+ * The interface version, in HCIVERSION, read as a word as built-in
+ * controllers' drivers read it, next to CAPLENGTH read as a byte; version
+ * 1.1 has an HCCPARAMS2 with none of its capabilities.
+ */
+static void test_xhci_version(void)
+{
+    static const uint16_t versions[] = { 0x100, 0x110 };
+    XHCITest x;
+
+    if (!xhci_test_supported("usb-kbd")) {
+        return;
+    }
+
+    for (int i = 0; i < ARRAY_SIZE(versions); i++) {
+        g_autofree char *opts = g_strdup_printf(",version=0x%x", versions[i]);
+        uint32_t dw;
+
+        xhci_test_start_opts(&x, opts, "-device usb-kbd");
+        dw = xhci_readl(&x, XHCI_CAPLENGTH);
+        g_assert_cmphex(dw >> 16, ==, versions[i]);
+        g_assert_cmphex(qpci_io_readw(x.hc.dev, x.hc.bar, XHCI_HCIVERSION),
+                        ==, versions[i]);
+        g_assert_cmphex(qpci_io_readb(x.hc.dev, x.hc.bar, XHCI_CAPLENGTH),
+                        ==, dw & 0xff);
+        if (versions[i] == 0x110) {
+            g_assert_cmphex(xhci_readl(&x, XHCI_HCCPARAMS2), ==, 0);
+        }
+        xhci_test_end(&x);
+    }
+}
+
+static void test_xhci_context_64(void)
+{
+    XHCITest x;
+
+    if (!xhci_test_supported("usb-kbd")) {
+        return;
+    }
+
+    xhci_test_start_opts(&x, ",context-64=on", "-device usb-kbd");
+    g_assert_cmpuint(x.ctx_size, ==, 64);
+    /* slot Addressed, ep0 Running */
+    g_assert_cmpuint(qtest_readl(x.qts, x.dev_ctx + 0x0c) >> 27, ==, 2);
+    g_assert_cmpuint(qtest_readl(x.qts, x.dev_ctx + 64) & 0x7, ==, 1);
+    g_assert_cmphex(qtest_readl(x.qts, x.dev_ctx + 64 + 4) >> 16, ==, 64);
+
+    /* the keyboard's interrupt IN endpoint 1: context 3 */
+    xhci_configure_ep(&x, 3, EP_TYPE_INT_IN, 7, 8);
+    g_assert_cmpuint(qtest_readl(x.qts, x.dev_ctx + 0x0c) >> 27, ==, 3);
+    g_assert_cmpuint(qtest_readl(x.qts, x.dev_ctx) >> 27, ==, 3);
+    g_assert_cmpuint(qtest_readl(x.qts, x.dev_ctx + 3 * 64) & 0x7, ==, 1);
+    g_assert_cmphex((qtest_readl(x.qts, x.dev_ctx + 3 * 64 + 4) >> 3) & 0x7,
+                    ==, EP_TYPE_INT_IN);
+    /* nothing at the 32-byte offsets */
+    g_assert_cmphex(qtest_readl(x.qts, x.dev_ctx + 3 * 32 + 4), ==, 0);
+
+    xhci_test_end(&x);
+}
+
+/*
  * Configure Endpoint with the endpoint's add flag only, no A0: Linux on
  * the Raspberry Pi reconfigures an endpoint so. It succeeds, and the
  * slot's context entries stay.
  */
 static void test_xhci_configure_ep_no_slot_ctx(void)
 {
-    uint64_t dcbaa, devctx, epctx;
+    uint64_t epctx;
     XHCITest x;
 
     if (!xhci_test_supported("usb-kbd")) {
@@ -485,7 +563,7 @@ static void test_xhci_configure_ep_no_slot_ctx(void)
     xhci_test_start(&x, "-device usb-kbd");
     xhci_configure_ep(&x, 3, EP_TYPE_INT_IN, 4, 8);
 
-    epctx = x.input_ctx + 0x20 * 4;
+    epctx = x.input_ctx + x.ctx_size * 4;
     qtest_memset(x.qts, x.input_ctx, 0, 0x1000);
     qtest_writel(x.qts, x.input_ctx + 0x04, 1 << 3);
     qtest_writel(x.qts, epctx + 0x00, 4 << 16);
@@ -493,11 +571,7 @@ static void test_xhci_configure_ep_no_slot_ctx(void)
     qtest_writeq(x.qts, epctx + 0x08, xhci_alloc_page(&x) | 1);
     xhci_command(&x, x.input_ctx,
                  TRB_TYPE(CR_CONFIGURE_ENDPOINT) | (x.slot << 24));
-
-    dcbaa = xhci_readl(&x, x.oper + XHCI_DCBAAP) |
-            (uint64_t)xhci_readl(&x, x.oper + XHCI_DCBAAP + 4) << 32;
-    devctx = qtest_readq(x.qts, dcbaa + 8 * x.slot);
-    g_assert_cmpuint(qtest_readl(x.qts, devctx) >> 27, ==, 3);
+    g_assert_cmpuint(qtest_readl(x.qts, x.dev_ctx) >> 27, ==, 3);
 
     xhci_test_end(&x);
 }
@@ -524,6 +598,8 @@ int main(int argc, char **argv)
                    test_xhci_isoch_ep_type_mismatch);
     qtest_add_func("/xhci/pci/configure-ep/no-slot-ctx",
                    test_xhci_configure_ep_no_slot_ctx);
+    qtest_add_func("/xhci/pci/version", test_xhci_version);
+    qtest_add_func("/xhci/pci/context-64", test_xhci_context_64);
 
     qtest_start("-device nec-usb-xhci,id=xhci"
                 " -drive id=drive0,if=none,file=null-co://,"

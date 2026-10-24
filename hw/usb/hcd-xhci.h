@@ -37,6 +37,7 @@ typedef struct XHCIEPContext XHCIEPContext;
 
 enum xhci_flags {
     XHCI_FLAG_ENABLE_STREAMS = 1,
+    XHCI_FLAG_CONTEXT_64,       /* 64-byte contexts (HCCPARAMS1.CSZ) */
 };
 
 typedef enum TRBType {
@@ -190,6 +191,7 @@ typedef struct XHCIState {
     uint32_t numintrs;
     uint32_t numslots;
     uint32_t flags;
+    uint16_t hci_version;
     uint32_t max_pstreams_mask;
     void (*intr_update)(XHCIState *s, int n, bool enable);
     bool (*intr_raise)(XHCIState *s, int n, bool level);

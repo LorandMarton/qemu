@@ -25,6 +25,11 @@ only controller you need.  With only a single USB controller (and
 therefore only a single USB bus) present in the system there is no
 need to use the bus= parameter when adding USB devices.
 
+The controller implements interface version 1.0 by default; ``version=0x110``
+makes it report version 1.1 (with none of the optional capabilities in
+HCCPARAMS2), and ``context-64=on`` makes it use 64-byte contexts
+(HCCPARAMS1.CSZ), as some host controllers do.
+
 
 EHCI controller support
 ^^^^^^^^^^^^^^^^^^^^^^^

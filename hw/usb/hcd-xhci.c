@@ -425,6 +425,13 @@ bool xhci_get_flag(XHCIState *xhci, enum xhci_flags bit)
     return xhci->flags & (1 << bit);
 }
 
+/* Context @index of the input or device context at @base */
+static dma_addr_t xhci_ctx(XHCIState *xhci, dma_addr_t base,
+                           unsigned int index)
+{
+    return base + index * (xhci_get_flag(xhci, XHCI_FLAG_CONTEXT_64) ? 64 : 32);
+}
+
 void xhci_set_flag(XHCIState *xhci, enum xhci_flags bit)
 {
     xhci->flags |= (1 << bit);
@@ -2129,8 +2136,9 @@ static TRBCCode xhci_address_slot(XHCIState *xhci, unsigned int slotid,
         return CC_TRB_ERROR;
     }
 
-    xhci_dma_read_u32s(xhci, ictx+32, slot_ctx, sizeof(slot_ctx));
-    xhci_dma_read_u32s(xhci, ictx+64, ep0_ctx, sizeof(ep0_ctx));
+    xhci_dma_read_u32s(xhci, xhci_ctx(xhci, ictx, 1), slot_ctx,
+                       sizeof(slot_ctx));
+    xhci_dma_read_u32s(xhci, xhci_ctx(xhci, ictx, 2), ep0_ctx, sizeof(ep0_ctx));
 
     DPRINTF("xhci: input slot context: %08x %08x %08x %08x\n",
             slot_ctx[0], slot_ctx[1], slot_ctx[2], slot_ctx[3]);
@@ -2188,7 +2196,7 @@ static TRBCCode xhci_address_slot(XHCIState *xhci, unsigned int slotid,
         usb_packet_cleanup(&p);
     }
 
-    res = xhci_enable_ep(xhci, slotid, 1, octx+32, ep0_ctx);
+    res = xhci_enable_ep(xhci, slotid, 1, xhci_ctx(xhci, octx, 1), ep0_ctx);
 
     DPRINTF("xhci: output slot context: %08x %08x %08x %08x\n",
             slot_ctx[0], slot_ctx[1], slot_ctx[2], slot_ctx[3]);
@@ -2196,7 +2204,8 @@ static TRBCCode xhci_address_slot(XHCIState *xhci, unsigned int slotid,
             ep0_ctx[0], ep0_ctx[1], ep0_ctx[2], ep0_ctx[3], ep0_ctx[4]);
 
     xhci_dma_write_u32s(xhci, octx, slot_ctx, sizeof(slot_ctx));
-    xhci_dma_write_u32s(xhci, octx+32, ep0_ctx, sizeof(ep0_ctx));
+    xhci_dma_write_u32s(xhci, xhci_ctx(xhci, octx, 1), ep0_ctx,
+                        sizeof(ep0_ctx));
 
     xhci->slots[slotid-1].addressed = 1;
     return res;
@@ -2253,7 +2262,8 @@ static TRBCCode xhci_configure_slot(XHCIState *xhci, unsigned int slotid,
         return CC_TRB_ERROR;
     }
 
-    xhci_dma_read_u32s(xhci, ictx+32, islot_ctx, sizeof(islot_ctx));
+    xhci_dma_read_u32s(xhci, xhci_ctx(xhci, ictx, 1), islot_ctx,
+                       sizeof(islot_ctx));
     xhci_dma_read_u32s(xhci, octx, slot_ctx, sizeof(slot_ctx));
 
     if (SLOT_STATE(slot_ctx[3]) < SLOT_ADDRESSED) {
@@ -2268,19 +2278,22 @@ static TRBCCode xhci_configure_slot(XHCIState *xhci, unsigned int slotid,
             xhci_disable_ep(xhci, slotid, i);
         }
         if (ictl_ctx[1] & (1<<i)) {
-            xhci_dma_read_u32s(xhci, ictx+32+(32*i), ep_ctx, sizeof(ep_ctx));
+            xhci_dma_read_u32s(xhci, xhci_ctx(xhci, ictx, i + 1), ep_ctx,
+                               sizeof(ep_ctx));
             DPRINTF("xhci: input ep%d.%d context: %08x %08x %08x %08x %08x\n",
                     i/2, i%2, ep_ctx[0], ep_ctx[1], ep_ctx[2],
                     ep_ctx[3], ep_ctx[4]);
             xhci_disable_ep(xhci, slotid, i);
-            res = xhci_enable_ep(xhci, slotid, i, octx+(32*i), ep_ctx);
+            res = xhci_enable_ep(xhci, slotid, i, xhci_ctx(xhci, octx, i),
+                                 ep_ctx);
             if (res != CC_SUCCESS) {
                 return res;
             }
             DPRINTF("xhci: output ep%d.%d context: %08x %08x %08x %08x %08x\n",
                     i/2, i%2, ep_ctx[0], ep_ctx[1], ep_ctx[2],
                     ep_ctx[3], ep_ctx[4]);
-            xhci_dma_write_u32s(xhci, octx+(32*i), ep_ctx, sizeof(ep_ctx));
+            xhci_dma_write_u32s(xhci, xhci_ctx(xhci, octx, i), ep_ctx,
+                                sizeof(ep_ctx));
         }
     }
 
@@ -2339,7 +2352,8 @@ static TRBCCode xhci_evaluate_slot(XHCIState *xhci, unsigned int slotid,
     }
 
     if (ictl_ctx[1] & 0x1) {
-        xhci_dma_read_u32s(xhci, ictx+32, islot_ctx, sizeof(islot_ctx));
+        xhci_dma_read_u32s(xhci, xhci_ctx(xhci, ictx, 1), islot_ctx,
+                           sizeof(islot_ctx));
 
         DPRINTF("xhci: input slot context: %08x %08x %08x %08x\n",
                 islot_ctx[0], islot_ctx[1], islot_ctx[2], islot_ctx[3]);
@@ -2359,13 +2373,15 @@ static TRBCCode xhci_evaluate_slot(XHCIState *xhci, unsigned int slotid,
     }
 
     if (ictl_ctx[1] & 0x2) {
-        xhci_dma_read_u32s(xhci, ictx+64, iep0_ctx, sizeof(iep0_ctx));
+        xhci_dma_read_u32s(xhci, xhci_ctx(xhci, ictx, 2), iep0_ctx,
+                           sizeof(iep0_ctx));
 
         DPRINTF("xhci: input ep0 context: %08x %08x %08x %08x %08x\n",
                 iep0_ctx[0], iep0_ctx[1], iep0_ctx[2],
                 iep0_ctx[3], iep0_ctx[4]);
 
-        xhci_dma_read_u32s(xhci, octx+32, ep0_ctx, sizeof(ep0_ctx));
+        xhci_dma_read_u32s(xhci, xhci_ctx(xhci, octx, 1), ep0_ctx,
+                           sizeof(ep0_ctx));
 
         ep0_ctx[1] &= ~0xFFFF0000; /* max packet size*/
         ep0_ctx[1] |= iep0_ctx[1] & 0xFFFF0000;
@@ -2373,7 +2389,8 @@ static TRBCCode xhci_evaluate_slot(XHCIState *xhci, unsigned int slotid,
         DPRINTF("xhci: output ep0 context: %08x %08x %08x %08x %08x\n",
                 ep0_ctx[0], ep0_ctx[1], ep0_ctx[2], ep0_ctx[3], ep0_ctx[4]);
 
-        xhci_dma_write_u32s(xhci, octx+32, ep0_ctx, sizeof(ep0_ctx));
+        xhci_dma_write_u32s(xhci, xhci_ctx(xhci, octx, 1), ep0_ctx,
+                            sizeof(ep0_ctx));
     }
 
     return CC_SUCCESS;
@@ -2759,9 +2776,10 @@ static uint64_t xhci_cap_read(void *ptr, hwaddr reg, unsigned size)
     XHCIState *xhci = ptr;
     uint32_t ret;
 
-    switch (reg) {
+    /* CAPLENGTH and HCIVERSION are a byte and a word of the first dword */
+    switch (reg & ~3) {
     case 0x00: /* HCIVERSION, CAPLENGTH */
-        ret = 0x01000000 | LEN_CAP;
+        ret = (xhci->hci_version << 16) | LEN_CAP;
         break;
     case 0x04: /* HCSPARAMS 1 */
         ret = ((xhci->numports_2+xhci->numports_3)<<24)
@@ -2779,12 +2797,18 @@ static uint64_t xhci_cap_read(void *ptr, hwaddr reg, unsigned size)
         } else {
             ret = 0x00080001 | (xhci->max_pstreams_mask << 12);
         }
+        if (xhci_get_flag(xhci, XHCI_FLAG_CONTEXT_64)) {
+            ret |= 1 << 2;
+        }
         break;
     case 0x14: /* DBOFF */
         ret = OFF_DOORBELL;
         break;
     case 0x18: /* RTSOFF */
         ret = OFF_RUNTIME;
+        break;
+    case 0x1c: /* HCCPARAMS2 (version 1.1): none of its capabilities */
+        ret = 0;
         break;
 
     /* extended capabilities */
@@ -2816,6 +2840,7 @@ static uint64_t xhci_cap_read(void *ptr, hwaddr reg, unsigned size)
         trace_usb_xhci_unimplemented("cap read", reg);
         ret = 0;
     }
+    ret >>= (reg & 3) * 8;
 
     trace_usb_xhci_cap_read(reg, ret);
     return ret;
@@ -3222,7 +3247,7 @@ static const MemoryRegionOps xhci_cap_ops = {
     .write = xhci_cap_write,
     .valid.min_access_size = 1,
     .valid.max_access_size = 4,
-    .impl.min_access_size = 4,
+    .impl.min_access_size = 1,
     .impl.max_access_size = 4,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
@@ -3447,6 +3472,11 @@ static void usb_xhci_realize(DeviceState *dev, Error **errp)
 
     XHCIState *xhci = XHCI(dev);
 
+    if (xhci->hci_version != 0x100 && xhci->hci_version != 0x110) {
+        error_setg(errp, "xhci: version 0x%x is not 0x100 or 0x110",
+                   xhci->hci_version);
+        return;
+    }
     if (xhci->numintrs > XHCI_MAXINTRS) {
         xhci->numintrs = XHCI_MAXINTRS;
     }
@@ -3557,7 +3587,7 @@ static int usb_xhci_post_load(void *opaque, int version_id)
         assert(slot->uport && slot->uport->dev);
 
         for (epid = 1; epid <= 31; epid++) {
-            pctx = slot->ctx + 32 * epid;
+            pctx = xhci_ctx(xhci, slot->ctx, epid);
             xhci_dma_read_u32s(xhci, pctx, ep_ctx, sizeof(ep_ctx));
             state = ep_ctx[0] & EP_STATE_MASK;
             if (state == EP_DISABLED) {
@@ -3691,6 +3721,9 @@ const VMStateDescription vmstate_xhci = {
 static const Property xhci_properties[] = {
     DEFINE_PROP_BIT("streams", XHCIState, flags,
                     XHCI_FLAG_ENABLE_STREAMS, true),
+    DEFINE_PROP_BIT("context-64", XHCIState, flags,
+                    XHCI_FLAG_CONTEXT_64, false),
+    DEFINE_PROP_UINT16("version", XHCIState, hci_version, 0x100),
     DEFINE_PROP_UINT32("p2",    XHCIState, numports_2, 4),
     DEFINE_PROP_UINT32("p3",    XHCIState, numports_3, 4),
     DEFINE_PROP_LINK("host",    XHCIState, hostOpaque, TYPE_DEVICE,
