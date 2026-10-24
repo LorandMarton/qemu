@@ -21,12 +21,18 @@
  * no need for qatomic_rcu_read() and pc is always consistent with a
  * non-NULL value of 'tb'.  Strictly speaking pc is only needed for
  * CF_PCREL, but it's used always for simplicity.
+ *
+ * The cache is indexed by virtual address, so an entry is only valid in
+ * the address spaces it was added in: it hits only while its 'tag' is the
+ * 'tag' of the cache, which tlb_set_asid_by_mmuidx() changes.
  */
 typedef struct CPUJumpCache {
     struct rcu_head rcu;
+    uint64_t tag;
     struct {
         TranslationBlock *tb;
         vaddr pc;
+        uint64_t tag;
     } array[TB_JMP_CACHE_SIZE];
 } CPUJumpCache;
 

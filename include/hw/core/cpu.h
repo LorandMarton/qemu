@@ -304,6 +304,11 @@ typedef struct CPUTLBDesc {
     CPUTLBEntry vtable[CPU_VTLB_SIZE];
     CPUTLBEntryFull vfulltlb[CPU_VTLB_SIZE];
     CPUTLBEntryFull *fulltlb;
+    /*
+     * The address space the entries were filled in, as last given to
+     * tlb_set_asid_by_mmuidx(); a value above UINT32_MAX if unknown.
+     */
+    uint64_t asid;
 } CPUTLBDesc;
 
 /*
@@ -319,6 +324,21 @@ typedef struct CPUTLBCommon {
      */
     MMUIdxMap dirty;
     /*
+     * For each mmu_idx, the TLBs of other address spaces kept by
+     * tlb_set_asid_by_mmuidx(), or NULL if it was never called for it.
+     * Protected by tlb_c.lock.
+     */
+    struct CPUTLBSaved *saved[NB_MMU_MODES];
+    /*
+     * The jump cache tags of the address spaces of recent switches, or
+     * NULL.  Protected by tlb_c.lock.
+     */
+    struct CPUTLBJmpTag *jmp_tags;
+    /* The last jump cache tag allocated. */
+    uint64_t jmp_tag;
+    /* Order of the switches between address spaces, for LRU replacement. */
+    uint64_t saved_stamp;
+    /*
      * The mmu indexes other vCPUs flushed while this one was halted, to be
      * flushed when it next enters cpu_exec().  Accessed atomically.
      */
@@ -331,6 +351,7 @@ typedef struct CPUTLBCommon {
     size_t full_flush_count;
     size_t part_flush_count;
     size_t elide_flush_count;
+    size_t asid_switch_count;
 } CPUTLBCommon;
 
 /*

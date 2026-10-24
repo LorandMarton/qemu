@@ -336,6 +336,59 @@ static void tlbi_aa64_vmalle1_write(CPUARMState *env, const ARMCPRegInfo *ri,
     }
 }
 
+/*
+ * TLBI ASIDE1: invalidate the EL1&0 translations of one ASID only, in the
+ * field of arm_e10_asid_tag() that TCR_EL1.A1 selects, or in both fields
+ * with TCR2_EL1.A2.  Under HCR_EL2.{E2H,TGE} it is for the EL2&0 regime,
+ * which is not tagged.
+ */
+static void tlbi_aa64_aside1(CPUARMState *env, uint64_t value, bool all_cpus)
+{
+    CPUState *cs = env_cpu(env);
+    uint64_t hcr = arm_hcr_el2_eff(env);
+    uint64_t tcr = env->cp15.tcr_el[1];
+    uint32_t mask = tcr & TCR_AS ? 0xffff : 0xff;
+    uint32_t asid = extract64(value, 48, 16);
+    bool a2 = cpu_isar_feature(aa64_asid2, env_archcpu(env)) &&
+              (env->cp15.tcr2_el[1] & TCR2_A2);
+
+    if ((hcr & (HCR_E2H | HCR_TGE)) == (HCR_E2H | HCR_TGE)) {
+        if (all_cpus) {
+            tlb_flush_by_mmuidx_all_cpus_synced(cs, vae1_tlbmask(env));
+        } else {
+            tlb_flush_by_mmuidx(cs, vae1_tlbmask(env));
+        }
+        return;
+    }
+
+    for (int shift = 0; shift <= 16; shift += 16) {
+        /* TTBR1_EL1.ASID at 0, TTBR0_EL1.ASID at 16 */
+        if (!a2 && shift != (tcr & TTBCR_A1 ? 0 : 16)) {
+            continue;
+        }
+        if (all_cpus) {
+            tlb_flush_asid_by_mmuidx_all_cpus_synced(cs, ARM_E10_S1_TLBMASK,
+                                                     asid << shift,
+                                                     mask << shift);
+        } else {
+            tlb_flush_asid_by_mmuidx(cs, ARM_E10_S1_TLBMASK,
+                                     asid << shift, mask << shift);
+        }
+    }
+}
+
+static void tlbi_aa64_aside1is_write(CPUARMState *env, const ARMCPRegInfo *ri,
+                                     uint64_t value)
+{
+    tlbi_aa64_aside1(env, value, true);
+}
+
+static void tlbi_aa64_aside1_write(CPUARMState *env, const ARMCPRegInfo *ri,
+                                   uint64_t value)
+{
+    tlbi_aa64_aside1(env, value, tlb_force_broadcast(env));
+}
+
 static int e2_tlbmask(CPUARMState *env)
 {
     return (ARMMMUIdxBit_E20_0 |
@@ -648,7 +701,7 @@ static const ARMCPRegInfo tlbi_v8_cp_reginfo[] = {
       .access = PL1_W, .accessfn = access_ttlbis,
       .type = ARM_CP_NO_RAW | ARM_CP_ADD_TLBI_NXS,
       .fgt = FGT_TLBIASIDE1IS,
-      .writefn = tlbi_aa64_vmalle1is_write },
+      .writefn = tlbi_aa64_aside1is_write },
     { .name = "TLBI_VAAE1IS", .state = ARM_CP_STATE_AA64,
       .opc0 = 1, .opc1 = 0, .crn = 8, .crm = 3, .opc2 = 3,
       .access = PL1_W, .accessfn = access_ttlbis,
@@ -684,7 +737,7 @@ static const ARMCPRegInfo tlbi_v8_cp_reginfo[] = {
       .access = PL1_W, .accessfn = access_ttlb,
       .type = ARM_CP_NO_RAW | ARM_CP_ADD_TLBI_NXS,
       .fgt = FGT_TLBIASIDE1,
-      .writefn = tlbi_aa64_vmalle1_write },
+      .writefn = tlbi_aa64_aside1_write },
     { .name = "TLBI_VAAE1", .state = ARM_CP_STATE_AA64,
       .opc0 = 1, .opc1 = 0, .crn = 8, .crm = 7, .opc2 = 3,
       .access = PL1_W, .accessfn = access_ttlb,
@@ -1174,7 +1227,7 @@ static const ARMCPRegInfo tlbios_reginfo[] = {
       .access = PL1_W, .accessfn = access_ttlbos,
       .type = ARM_CP_NO_RAW | ARM_CP_ADD_TLBI_NXS,
       .fgt = FGT_TLBIASIDE1OS,
-      .writefn = tlbi_aa64_vmalle1is_write },
+      .writefn = tlbi_aa64_aside1is_write },
     { .name = "TLBI_VAAE1OS", .state = ARM_CP_STATE_AA64,
       .opc0 = 1, .opc1 = 0, .crn = 8, .crm = 1, .opc2 = 3,
       .access = PL1_W, .accessfn = access_ttlbos,

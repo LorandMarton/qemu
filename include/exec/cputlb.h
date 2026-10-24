@@ -189,6 +189,46 @@ void tlb_flush_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap);
 void tlb_flush_by_mmuidx_all_cpus_synced(CPUState *cpu, MMUIdxMap idxmap);
 
 /**
+ * tlb_set_asid_by_mmuidx:
+ * @cpu: CPU whose TLB is switched
+ * @idxmap: bitmap of MMU indexes whose translations depend on the ASID
+ * @asid: the new address space identifier
+ *
+ * Make @asid the current address space of the TLB of @cpu for the
+ * specified MMU indexes, instead of flushing it as an untagged TLB would
+ * need.  The entries of a few address spaces are kept, and they are used
+ * again when their address space becomes current, unless flushed in the
+ * meantime: all flushes apply to them as well.  This models a TLB tagged
+ * with ASIDs.
+ *
+ * The target must call this function, or flush these MMU indexes,
+ * whenever the address space of their translations changes.  A flush makes
+ * the address space unknown, so the first call after it never reuses the
+ * entries filled since the flush.
+ */
+void tlb_set_asid_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap, uint32_t asid);
+
+/**
+ * tlb_flush_asid_by_mmuidx:
+ * @cpu: CPU whose TLB should be flushed
+ * @idxmap: bitmap of MMU indexes to flush
+ * @asid: address space identifier to flush
+ * @mask: the bits of the identifier that are compared
+ *
+ * Flush the entries of the specified MMU indexes that were filled in the
+ * address spaces whose identifier, as given to tlb_set_asid_by_mmuidx(),
+ * equals @asid in the bits of @mask, and those whose address space is not
+ * known.  The entries of the other address spaces are kept.
+ */
+void tlb_flush_asid_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap,
+                              uint32_t asid, uint32_t mask);
+
+/* Similarly, with broadcast and syncing. */
+void tlb_flush_asid_by_mmuidx_all_cpus_synced(CPUState *cpu,
+                                              MMUIdxMap idxmap,
+                                              uint32_t asid, uint32_t mask);
+
+/**
  * tlb_flush_page_bits_by_mmuidx
  * @cpu: CPU whose TLB should be flushed
  * @addr: virtual address of page to be flushed
@@ -245,6 +285,19 @@ static inline void tlb_flush_page_by_mmuidx(CPUState *cpu,
 }
 
 static inline void tlb_flush_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap)
+{
+}
+static inline void tlb_set_asid_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap,
+                                          uint32_t asid)
+{
+}
+static inline void tlb_flush_asid_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap,
+                                            uint32_t asid, uint32_t mask)
+{
+}
+static inline void
+tlb_flush_asid_by_mmuidx_all_cpus_synced(CPUState *cpu, MMUIdxMap idxmap,
+                                         uint32_t asid, uint32_t mask)
 {
 }
 static inline void tlb_flush_page_by_mmuidx_all_cpus_synced(CPUState *cpu,

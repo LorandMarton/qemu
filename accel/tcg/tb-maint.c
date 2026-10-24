@@ -892,24 +892,27 @@ static inline void tb_jmp_unlink(TranslationBlock *dest)
     qemu_spin_unlock(&dest->jmp_lock);
 }
 
+/*
+ * tb_lookup() does not return a TB with CF_INVALID, so this only frees the
+ * jump cache entry early.  A CF_PCREL TB may be cached at any virtual
+ * address; flushing every jump cache for it would cost more than the
+ * misses it saves, so its entries stay until replaced.
+ */
 static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
 {
     CPUState *cpu;
+    uint32_t h;
 
     if (tb_cflags(tb) & CF_PCREL) {
-        /* A TB may be at any virtual address */
-        CPU_FOREACH(cpu) {
-            tcg_flush_jmp_cache(cpu);
-        }
-    } else {
-        uint32_t h = tb_jmp_cache_hash_func(tb->pc);
+        return;
+    }
 
-        CPU_FOREACH(cpu) {
-            CPUJumpCache *jc = cpu->tb_jmp_cache;
+    h = tb_jmp_cache_hash_func(tb->pc);
+    CPU_FOREACH(cpu) {
+        CPUJumpCache *jc = cpu->tb_jmp_cache;
 
-            if (qatomic_read(&jc->array[h].tb) == tb) {
-                qatomic_set(&jc->array[h].tb, NULL);
-            }
+        if (qatomic_read(&jc->array[h].tb) == tb) {
+            qatomic_set(&jc->array[h].tb, NULL);
         }
     }
 }

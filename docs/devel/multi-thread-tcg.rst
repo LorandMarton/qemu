@@ -224,6 +224,16 @@ safe work: none of the others executes before it has flushed.
 TLB flag updates are all done atomically and are also protected by the
 corresponding page lock.
 
+A target with ASID-tagged translations calls tlb_set_asid_by_mmuidx()
+when the address space changes, instead of flushing. The TLBs it keeps
+for the other address spaces belong to the vCPU like the current ones:
+all flushes and flag updates apply to them as well, under the same
+tlb_c.lock. Since the tb_jmp_cache is indexed by virtual address, its
+entries carry a tag of the address spaces they were added in and only
+hit while that tag is current. tlb_flush_asid_by_mmuidx() flushes the
+TLBs of one ASID, current or kept, and forgets the jump cache tags that
+include it; the other address spaces keep their entries.
+
 (Known limitation)
 
 Not really a limitation but the wait mechanism is overly strict for

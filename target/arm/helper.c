@@ -2982,13 +2982,26 @@ static void vmsa_tcr_el12_write(CPUARMState *env, const ARMCPRegInfo *ri,
 static void vmsa_ttbr_write(CPUARMState *env, const ARMCPRegInfo *ri,
                             uint64_t value)
 {
-    /* If the ASID changes (with a 64-bit write), we must flush the TLB.  */
-    if (cpreg_field_type(ri) == MO_64 &&
-        extract64(raw_read(env, ri) ^ value, 48, 16) != 0) {
-        ARMCPU *cpu = env_archcpu(env);
-        tlb_flush(CPU(cpu));
-    }
+    CPUState *cs = env_cpu(env);
+    uint64_t old = raw_read(env, ri);
+
     raw_write(env, ri, value);
+
+    /* Only a 64-bit write can change the ASID.  */
+    if (cpreg_field_type(ri) != MO_64 || extract64(old ^ value, 48, 16) == 0) {
+        return;
+    }
+
+    if (ri->fieldoffset == offsetof(CPUARMState, cp15.ttbr0_el[1]) ||
+        ri->fieldoffset == offsetof(CPUARMState, cp15.ttbr1_el[1])) {
+        /*
+         * Keep the TLB of the other address spaces, as when KPTI changes
+         * the ASID on every kernel entry and exit.
+         */
+        tlb_set_asid_by_mmuidx(cs, ARM_E10_S1_TLBMASK, arm_e10_asid_tag(env));
+    } else {
+        tlb_flush(cs);
+    }
 }
 
 static void vmsa_tcr_ttbr_el2_write(CPUARMState *env, const ARMCPRegInfo *ri,

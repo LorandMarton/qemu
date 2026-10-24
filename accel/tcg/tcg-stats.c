@@ -132,34 +132,38 @@ static gboolean tb_tree_stats_iter(gpointer key, gpointer value, gpointer data)
     return false;
 }
 
-static void tlb_flush_counts(size_t *pfull, size_t *ppart, size_t *pelide)
+static void tlb_flush_counts(size_t *pfull, size_t *ppart, size_t *pelide,
+                             size_t *pasid)
 {
     CPUState *cpu;
-    size_t full = 0, part = 0, elide = 0;
+    size_t full = 0, part = 0, elide = 0, asid = 0;
 
     CPU_FOREACH(cpu) {
         full += qatomic_read(&cpu->neg.tlb.c.full_flush_count);
         part += qatomic_read(&cpu->neg.tlb.c.part_flush_count);
         elide += qatomic_read(&cpu->neg.tlb.c.elide_flush_count);
+        asid += qatomic_read(&cpu->neg.tlb.c.asid_switch_count);
     }
     *pfull = full;
     *ppart = part;
     *pelide = elide;
+    *pasid = asid;
 }
 
 static void tcg_dump_flush_info(GString *buf)
 {
-    size_t flush_full, flush_part, flush_elide;
+    size_t flush_full, flush_part, flush_elide, asid_switch;
 
     g_string_append_printf(buf, "TB flush count      %u\n",
                            qatomic_read(&tb_ctx.tb_flush_count));
     g_string_append_printf(buf, "TB invalidate count %u\n",
                            qatomic_read(&tb_ctx.tb_phys_invalidate_count));
 
-    tlb_flush_counts(&flush_full, &flush_part, &flush_elide);
+    tlb_flush_counts(&flush_full, &flush_part, &flush_elide, &asid_switch);
     g_string_append_printf(buf, "TLB full flushes    %zu\n", flush_full);
     g_string_append_printf(buf, "TLB partial flushes %zu\n", flush_part);
     g_string_append_printf(buf, "TLB elided flushes  %zu\n", flush_elide);
+    g_string_append_printf(buf, "TLB ASID switches   %zu\n", asid_switch);
 }
 
 static void dump_exec_info(GString *buf)

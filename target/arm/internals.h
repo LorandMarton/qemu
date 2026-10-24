@@ -214,6 +214,8 @@ FIELD(CPTR_EL3, TCPAC, 31, 1)
 #define TTBCR_SH1    (1U << 28)
 #define TTBCR_EAE    (1U << 31)
 
+#define TCR_AS       (1ULL << 36)
+
 #define TCR2_PNCH    (1ULL << 0)
 #define TCR2_PIE     (1ULL << 1)
 #define TCR2_E0POE   (1ULL << 2)
@@ -2002,6 +2004,24 @@ uint64_t gt_direct_access_timer_offset(CPUARMState *env, int timeridx);
  * all EL1" scope; this covers stage 1 and stage 2.
  */
 int alle1_tlbmask(CPUARMState *env);
+
+/* The EL1&0 stage 1 translations, which are tagged with an ASID. */
+#define ARM_E10_S1_TLBMASK (ARMMMUIdxBit_E10_1 | ARMMMUIdxBit_E10_1_PAN | \
+                            ARMMMUIdxBit_E10_1_GCS | ARMMMUIdxBit_E10_0 | \
+                            ARMMMUIdxBit_E10_0_GCS)
+
+/*
+ * The address space identifier of ARM_E10_S1_TLBMASK for
+ * tlb_set_asid_by_mmuidx(): TTBR0_EL1.ASID in bits [31:16] and
+ * TTBR1_EL1.ASID in bits [15:0].  TCR_EL1.A1 and AS, TCR2_EL1.A2 and
+ * TTBCR.EAE, which select the ASID of a translation, do not change
+ * without a TLB flush.
+ */
+static inline uint32_t arm_e10_asid_tag(CPUARMState *env)
+{
+    return extract64(env->cp15.ttbr0_el[1], 48, 16) << 16 |
+           extract64(env->cp15.ttbr1_el[1], 48, 16);
+}
 /*
  * Return mask of ARMMMUIdxBit values corresponding to an "invalidate
  * all EL2&0" scope.
