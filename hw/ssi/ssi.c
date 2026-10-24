@@ -82,14 +82,19 @@ static void ssi_cs_default(void *opaque, int n, int level)
     s->cs = cs;
 }
 
-static uint32_t ssi_transfer_raw_default(SSIPeripheral *dev, uint32_t val)
+static bool ssi_peripheral_selected(SSIPeripheral *dev)
 {
     SSIPeripheralClass *ssc = dev->spc;
 
-    if ((dev->cs && ssc->cs_polarity == SSI_CS_HIGH) ||
-        (!dev->cs && ssc->cs_polarity == SSI_CS_LOW) ||
-        ssc->cs_polarity == SSI_CS_NONE) {
-        return ssc->transfer(dev, val);
+    return (dev->cs && ssc->cs_polarity == SSI_CS_HIGH) ||
+           (!dev->cs && ssc->cs_polarity == SSI_CS_LOW) ||
+           ssc->cs_polarity == SSI_CS_NONE;
+}
+
+static uint32_t ssi_transfer_raw_default(SSIPeripheral *dev, uint32_t val)
+{
+    if (ssi_peripheral_selected(dev)) {
+        return dev->spc->transfer(dev, val);
     }
     return 0;
 }
@@ -165,6 +170,35 @@ uint32_t ssi_transfer(SSIBus *bus, uint32_t val)
     }
 
     return r;
+}
+
+void ssi_transfer_buf(SSIBus *bus, const uint32_t *tx, uint32_t *rx,
+                      size_t len)
+{
+    BusState *b = BUS(bus);
+    BusChild *kid;
+    g_autofree uint32_t *r = g_new(uint32_t, len);
+
+    memset(rx, 0, len * sizeof(*rx));
+    QTAILQ_FOREACH(kid, &b->children, sibling) {
+        SSIPeripheral *p = SSI_PERIPHERAL(kid->child);
+        SSIPeripheralClass *ssc = p->spc;
+
+        if (ssc->transfer_buf &&
+            ssc->transfer_raw == ssi_transfer_raw_default) {
+            if (!ssi_peripheral_selected(p)) {
+                continue;
+            }
+            ssc->transfer_buf(p, tx, r, len);
+        } else {
+            for (size_t i = 0; i < len; i++) {
+                r[i] = ssc->transfer_raw(p, tx[i]);
+            }
+        }
+        for (size_t i = 0; i < len; i++) {
+            rx[i] |= r[i];
+        }
+    }
 }
 
 const VMStateDescription vmstate_ssi_peripheral = {

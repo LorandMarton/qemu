@@ -56,6 +56,15 @@ struct SSIPeripheralClass {
      * See ssi_transfer().
      */
     uint32_t (*transfer_raw)(SSIPeripheral *dev, uint32_t val);
+
+    /*
+     * Optional, for standard CS behaviour: transfer @len words at once, as
+     * @len calls of transfer would, @rx[i] being the answer to @tx[i].
+     * Devices whose transfers are costly (an exchange with another
+     * process) take a batch this way. See ssi_transfer_buf().
+     */
+    void (*transfer_buf)(SSIPeripheral *dev, const uint32_t *tx,
+                         uint32_t *rx, size_t len);
 };
 
 struct SSIPeripheral {
@@ -125,6 +134,20 @@ SSIBus *ssi_create_bus(DeviceState *parent, const char *name);
  * Return: word value received
  */
 uint32_t ssi_transfer(SSIBus *bus, uint32_t val);
+
+/**
+ * Transfer words on a SSI bus
+ * @bus: SSI bus
+ * @tx: words to transmit
+ * @rx: words received
+ * @len: number of words
+ *
+ * The same as calling ssi_transfer() for each word of @tx in turn, with
+ * the chip selects unchanged; devices with transfer_buf get all of them in
+ * one call.
+ */
+void ssi_transfer_buf(SSIBus *bus, const uint32_t *tx, uint32_t *rx,
+                      size_t len);
 
 DeviceState *ssi_get_cs(SSIBus *bus, uint8_t cs_index);
 
