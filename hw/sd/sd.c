@@ -57,6 +57,8 @@
 //#define DEBUG_SD 1
 
 #define SDSC_MAX_CAPACITY   (2 * GiB)
+/* Multi-block transfer buffer, sized for a Linux sdhci request */
+#define SD_MB_BUF_SIZE      (512 * KiB)
 
 #define INVALID_ADDRESS     UINT32_MAX
 
@@ -196,6 +198,19 @@ struct SDState {
     uint32_t data_offset;
     size_t data_size;
     uint8_t data[512];
+    /*
+     * CMD18/CMD25 data, so that a multi-block transfer is one host I/O
+     * instead of one per block. Reads: mb_buf holds mb_len bytes from card
+     * address mb_start, filled at the first block of the transfer. Writes
+     * (mb_dirty): blocks received but not yet written, committed when the
+     * CMD23 count is reached, the buffer is full or the next command
+     * arrives. Not migrated: the write side is flushed in pre_save, the read
+     * side refilled on demand.
+     */
+    uint8_t *mb_buf;
+    uint64_t mb_start;
+    uint32_t mb_len;
+    bool mb_dirty;
     struct {
         uint32_t write_counter;
         uint8_t key[RPMB_KEY_MAC_LEN];
@@ -938,6 +953,74 @@ static uint32_t sd_part_offset(SDState *sd)
     }
 }
 
+static bool sd_part_is_rpmb(SDState *sd)
+{
+    return (sd->ext_csd[EXT_CSD_PART_CONFIG] & EXT_CSD_PART_CONFIG_ACC_MASK)
+           == EXT_CSD_PART_CONFIG_ACC_RPMB;
+}
+
+/* Commit the pending CMD25 blocks; drop the read data */
+static void sd_mb_flush(SDState *sd)
+{
+    if (sd->mb_dirty && sd->mb_len) {
+        trace_sdcard_write_block(sd->mb_start, sd->mb_len);
+        if (!sd->blk || blk_pwrite(sd->blk, sd->mb_start + sd_part_offset(sd),
+                                   sd->mb_len, sd->mb_buf, 0) < 0) {
+            fprintf(stderr, "sd_blk_write: write error on host side\n");
+        }
+    }
+    sd->mb_len = 0;
+    sd->mb_dirty = false;
+}
+
+/*
+ * Read the current CMD18 block and the following ones: the remaining CMD23
+ * count, or as much as fits when the transfer is open-ended (stopped by
+ * CMD12; the extra data is never seen by the guest).
+ */
+static void sd_mb_fill(SDState *sd, uint32_t blk_len)
+{
+    uint64_t addr = sd->data_start + sd_part_offset(sd);
+    int64_t avail = sd->blk ? blk_getlength(sd->blk) - addr : 0;
+    uint64_t len = SD_MB_BUF_SIZE;
+
+    if (sd->multi_blk_cnt) {
+        len = MIN(len, (uint64_t)sd->multi_blk_cnt * blk_len);
+    }
+    if (avail > 0 && len > avail) {
+        len = MAX(QEMU_ALIGN_DOWN(avail, blk_len), blk_len);
+    }
+    if (!sd->mb_buf) {
+        sd->mb_buf = g_malloc(SD_MB_BUF_SIZE);
+    }
+    trace_sdcard_read_block(sd->data_start, len);
+    sd->mb_start = sd->data_start;
+    sd->mb_len = len;
+    sd->mb_dirty = false;
+    if (!sd->blk || blk_pread(sd->blk, addr, len, sd->mb_buf, 0) < 0) {
+        fprintf(stderr, "sd_blk_read: read error on host side\n");
+    }
+}
+
+/* Queue the block in sd->data for a CMD25 transfer starting at mb_start */
+static void sd_mb_write_block(SDState *sd, uint32_t len)
+{
+    if (sd->mb_len && (!sd->mb_dirty ||
+                       sd->mb_start + sd->mb_len != sd->data_start ||
+                       sd->mb_len + len > SD_MB_BUF_SIZE)) {
+        sd_mb_flush(sd);
+    }
+    if (!sd->mb_buf) {
+        sd->mb_buf = g_malloc(SD_MB_BUF_SIZE);
+    }
+    if (!sd->mb_len) {
+        sd->mb_start = sd->data_start;
+        sd->mb_dirty = true;
+    }
+    memcpy(sd->mb_buf + sd->mb_len, sd->data, len);
+    sd->mb_len += len;
+}
+
 static uint64_t sd_req_get_address(SDState *sd, SDRequest req)
 {
     uint64_t addr;
@@ -964,6 +1047,7 @@ static void sd_reset(DeviceState *dev)
     uint64_t sect;
 
     trace_sdcard_reset();
+    sd_mb_flush(sd);
     if (sd->blk) {
         blk_get_geometry(sd->blk, &sect);
     } else {
@@ -1118,10 +1202,17 @@ static int sd_vmstate_pre_load(void *opaque)
     return 0;
 }
 
+static int sd_vmstate_pre_save(void *opaque)
+{
+    sd_mb_flush(opaque);
+    return 0;
+}
+
 static const VMStateDescription sd_vmstate = {
     .name = "sd-card",
     .version_id = 2,
     .minimum_version_id = 2,
+    .pre_save = sd_vmstate_pre_save,
     .pre_load = sd_vmstate_pre_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UNUSED(4),
@@ -2547,6 +2638,9 @@ static size_t sd_do_command(SDState *sd, SDRequest *req,
         return 0;
     }
 
+    /* Commit what CMD25 received before CMD12 or any other command acts */
+    sd_mb_flush(sd);
+
     if (sd->state == sd_inactive_state) {
         rtype = sd_illegal;
         goto send_response;
@@ -2748,10 +2842,10 @@ static size_t sd_write_data(SDState *sd, const void *buf, size_t length)
 
     case 25:  /* CMD25:  WRITE_MULTIPLE_BLOCK */
         /*
-         * Only read one byte at a time. We will be called again with the
-         * remaining.
+         * Take up to the end of the current block. We will be called again
+         * with the remaining.
          */
-        length = 1;
+        length = MIN(length, blk_len - sd->data_offset);
 
         if (sd->data_offset == 0) {
             /* Start of the block - let's check the address is valid */
@@ -2766,7 +2860,8 @@ static size_t sd_write_data(SDState *sd, const void *buf, size_t length)
                 }
             }
         }
-        sd->data[sd->data_offset++] = value[0];
+        memcpy(sd->data + sd->data_offset, value, length);
+        sd->data_offset += length;
         if (sd->data_offset >= blk_len) {
             /* TODO: Check CRC before committing */
             sd->state = sd_programming_state;
@@ -2775,7 +2870,7 @@ static size_t sd_write_data(SDState *sd, const void *buf, size_t length)
             if (partition_access == EXT_CSD_PART_CONFIG_ACC_RPMB) {
                 emmc_rpmb_blk_write(sd, sd->data_start, sd->data_offset);
             } else {
-                sd_blk_write(sd, sd->data_start, sd->data_offset);
+                sd_mb_write_block(sd, sd->data_offset);
             }
             sd->blk_written++;
             sd->data_start += blk_len;
@@ -2786,6 +2881,7 @@ static size_t sd_write_data(SDState *sd, const void *buf, size_t length)
             if (sd->multi_blk_cnt != 0) {
                 if (--sd->multi_blk_cnt == 0) {
                     /* Stop! */
+                    sd_mb_flush(sd);
                     sd->state = sd_transfer_state;
                     break;
                 }
@@ -2904,26 +3000,36 @@ static size_t sd_read_data(SDState *sd, void *buf, size_t length)
 
     case 18:  /* CMD18:  READ_MULTIPLE_BLOCK */
         /*
-         * We will only read one byte at a time. We will be called again with
-         * the remaining buffer.
+         * RPMB: one byte at a time; otherwise up to the end of the current
+         * block. We will be called again with the remaining buffer.
          */
-        length = 1;
+        length = sd_part_is_rpmb(sd) ? 1 : length;
 
         if (sd->data_offset == 0) {
             if (!address_in_range(sd, "READ_MULTIPLE_BLOCK",
                                   sd->data_start, blk_len)) {
-                *value = dummy_byte;
+                memset(buf, dummy_byte, length);
                 return length;
             }
             partition_access = sd->ext_csd[EXT_CSD_PART_CONFIG]
                     & EXT_CSD_PART_CONFIG_ACC_MASK;
             if (partition_access == EXT_CSD_PART_CONFIG_ACC_RPMB) {
                 emmc_rpmb_blk_read(sd, sd->data_start, blk_len);
-            } else {
-                sd_blk_read(sd, sd->data_start, blk_len);
             }
         }
-        *value = sd->data[sd->data_offset++];
+        if (sd_part_is_rpmb(sd)) {
+            *value = sd->data[sd->data_offset++];
+        } else {
+            if (sd->mb_dirty || sd->data_start < sd->mb_start ||
+                sd->data_start + blk_len > sd->mb_start + sd->mb_len) {
+                sd_mb_fill(sd, blk_len);
+            }
+            /* The rest of the current block */
+            length = MIN(length, blk_len - sd->data_offset);
+            memcpy(value, sd->mb_buf + (sd->data_start - sd->mb_start) +
+                   sd->data_offset, length);
+            sd->data_offset += length;
+        }
 
         if (sd->data_offset >= blk_len) {
             sd->data_start += blk_len;
@@ -3125,6 +3231,7 @@ static void sd_instance_finalize(Object *obj)
     SDState *sd = SDMMC_COMMON(obj);
 
     timer_free(sd->ocr_power_timer);
+    g_free(sd->mb_buf);
 }
 
 static void sd_blk_size_error(SDState *sd, int64_t blk_size,
