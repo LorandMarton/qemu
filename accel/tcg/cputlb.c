@@ -348,23 +348,60 @@ void tlb_destroy(CPUState *cpu)
     }
 }
 
-/* flush_all_helper: run fn across all cpus
+/*
+ * A vCPU that is halted outside cpu_exec() does not use its TLB until it
+ * executes again.  Rather than waking its thread for every flush another
+ * vCPU asks for (an idle guest CPU gets one per broadcast TLB invalidate),
+ * record the mmu indexes; the vCPU flushes them in full when it next enters
+ * cpu_exec(), see tlb_flush_deferred().  Flushing more than was asked is
+ * always allowed.
  *
- * If the wait flag is set then the src cpu's helper will be queued as
- * "safe" work and the loop exited creating a synchronisation point
- * where all queued work will be finished before execution starts
- * again.
+ * Return false if @cpu may be executing: the caller then queues the flush
+ * as usual, and @cpu also flushes the recorded indexes on its next entry.
  */
-static void flush_all_helper(CPUState *src, run_on_cpu_func fn,
-                             run_on_cpu_data d)
+static bool tlb_defer_flush(CPUState *cpu, MMUIdxMap idxmap)
+{
+    if (!qatomic_read(&cpu->halted)) {
+        return false;
+    }
+    qatomic_or(&cpu->neg.tlb.c.deferred_flush, idxmap);
+    /* Write deferred_flush before reading running; pairs with cpu_exec_start */
+    smp_mb();
+    return !qatomic_read(&cpu->running);
+}
+
+/*
+ * flush_all_helper: run fn on all cpus but src, for a flush of idxmap.
+ *
+ * Return whether any vCPU got the work queued.  If so, the callers queue
+ * src's flush as "safe" work, so that it completes while no other vCPU
+ * executes, after they have taken their flushes.  Otherwise no other vCPU
+ * executes before it has flushed, and src flushes in place: see
+ * tlb_flush_in_place().
+ */
+static bool flush_all_helper(CPUState *src, run_on_cpu_func fn,
+                             run_on_cpu_data d, MMUIdxMap idxmap)
 {
     CPUState *cpu;
+    bool queued = false;
 
     CPU_FOREACH(cpu) {
-        if (cpu != src) {
+        if (cpu != src && !tlb_defer_flush(cpu, idxmap)) {
             async_run_on_cpu(cpu, fn, d);
+            queued = true;
         }
     }
+    return queued;
+}
+
+/*
+ * Whether src may take its part of an all_cpus_synced flush at once, the
+ * other vCPUs having deferred theirs: src must be the current vCPU, the
+ * one that executes the flush instruction.
+ */
+static bool tlb_flush_in_place(CPUState *src, bool queued)
+{
+    return !queued && qemu_cpu_is_self(src);
 }
 
 static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
@@ -407,6 +444,18 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
     }
 }
 
+void tlb_flush_deferred(CPUState *cpu)
+{
+    MMUIdxMap idxmap;
+
+    /* cpu_exec_start() wrote cpu->running and issued a full barrier. */
+    if (likely(!qatomic_read(&cpu->neg.tlb.c.deferred_flush))) {
+        return;
+    }
+    idxmap = qatomic_xchg(&cpu->neg.tlb.c.deferred_flush, 0);
+    tlb_flush_by_mmuidx_async_work(cpu, RUN_ON_CPU_HOST_INT(idxmap));
+}
+
 void tlb_flush_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap)
 {
     tlb_debug("mmu_idx: 0x%" PRIx16 "\n", idxmap);
@@ -424,11 +473,17 @@ void tlb_flush(CPUState *cpu)
 void tlb_flush_by_mmuidx_all_cpus_synced(CPUState *src_cpu, MMUIdxMap idxmap)
 {
     const run_on_cpu_func fn = tlb_flush_by_mmuidx_async_work;
+    const run_on_cpu_data d = RUN_ON_CPU_HOST_INT(idxmap);
+    bool queued;
 
     tlb_debug("mmu_idx: 0x%"PRIx16"\n", idxmap);
 
-    flush_all_helper(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
-    async_safe_run_on_cpu(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
+    queued = flush_all_helper(src_cpu, fn, d, idxmap);
+    if (tlb_flush_in_place(src_cpu, queued)) {
+        fn(src_cpu, d);
+        return;
+    }
+    async_safe_run_on_cpu(src_cpu, fn, d);
 }
 
 void tlb_flush_all_cpus_synced(CPUState *src_cpu)
@@ -643,23 +698,35 @@ void tlb_flush_page_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
      * See tlb_flush_page_by_mmuidx for details.
      */
     if (idxmap < TARGET_PAGE_SIZE) {
-        flush_all_helper(src_cpu, tlb_flush_page_by_mmuidx_async_1,
-                         RUN_ON_CPU_TARGET_PTR(addr | idxmap));
-        async_safe_run_on_cpu(src_cpu, tlb_flush_page_by_mmuidx_async_1,
-                              RUN_ON_CPU_TARGET_PTR(addr | idxmap));
+        const run_on_cpu_data d = RUN_ON_CPU_TARGET_PTR(addr | idxmap);
+        bool queued;
+
+        queued = flush_all_helper(src_cpu, tlb_flush_page_by_mmuidx_async_1,
+                                  d, idxmap);
+        if (tlb_flush_in_place(src_cpu, queued)) {
+            tlb_flush_page_by_mmuidx_async_0(src_cpu, addr, idxmap);
+            return;
+        }
+        async_safe_run_on_cpu(src_cpu, tlb_flush_page_by_mmuidx_async_1, d);
     } else {
         CPUState *dst_cpu;
         TLBFlushPageByMMUIdxData *d;
+        bool queued = false;
 
         /* Allocate a separate data block for each destination cpu.  */
         CPU_FOREACH(dst_cpu) {
-            if (dst_cpu != src_cpu) {
+            if (dst_cpu != src_cpu && !tlb_defer_flush(dst_cpu, idxmap)) {
                 d = g_new(TLBFlushPageByMMUIdxData, 1);
                 d->addr = addr;
                 d->idxmap = idxmap;
                 async_run_on_cpu(dst_cpu, tlb_flush_page_by_mmuidx_async_2,
                                  RUN_ON_CPU_HOST_PTR(d));
+                queued = true;
             }
+        }
+        if (tlb_flush_in_place(src_cpu, queued)) {
+            tlb_flush_page_by_mmuidx_async_0(src_cpu, addr, idxmap);
+            return;
         }
 
         d = g_new(TLBFlushPageByMMUIdxData, 1);
@@ -827,6 +894,7 @@ void tlb_flush_range_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
 {
     TLBFlushRangeData d, *p;
     CPUState *dst_cpu;
+    bool queued = false;
 
     /* If no page bits are significant, this devolves to tlb_flush. */
     if (bits < TARGET_PAGE_BITS) {
@@ -850,11 +918,16 @@ void tlb_flush_range_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
 
     /* Allocate a separate data block for each destination cpu.  */
     CPU_FOREACH(dst_cpu) {
-        if (dst_cpu != src_cpu) {
+        if (dst_cpu != src_cpu && !tlb_defer_flush(dst_cpu, idxmap)) {
             p = g_memdup(&d, sizeof(d));
             async_run_on_cpu(dst_cpu, tlb_flush_range_by_mmuidx_async_1,
                              RUN_ON_CPU_HOST_PTR(p));
+            queued = true;
         }
+    }
+    if (tlb_flush_in_place(src_cpu, queued)) {
+        tlb_flush_range_by_mmuidx_async_0(src_cpu, d);
+        return;
     }
 
     p = g_memdup(&d, sizeof(d));

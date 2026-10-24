@@ -65,6 +65,11 @@ void tlb_init(CPUState *cpu);
  * @cpu: CPU whose TLB should be destroyed
  */
 void tlb_destroy(CPUState *cpu);
+/**
+ * tlb_flush_deferred - take the flushes other vCPUs asked for while halted
+ * @cpu: the current vCPU, after cpu_exec_start() and before it executes
+ */
+void tlb_flush_deferred(CPUState *cpu);
 
 bool tcg_exec_realizefn(CPUState *cpu, Error **errp);
 void tcg_exec_unrealizefn(CPUState *cpu);

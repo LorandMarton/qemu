@@ -211,6 +211,16 @@ synchronisation by setting the source vCPUs work as "safe work" and
 exiting the cpu run loop. This ensures that by the time execution
 restarts all flush operations have completed.
 
+A vCPU that is halted outside cpu_exec() is not woken for these
+flushes: the mmu indexes are recorded in its CPUTLBCommon and it
+flushes them in full when it next enters cpu_exec(), before executing
+anything (tlb_flush_deferred()). A full barrier between setting the
+record and reading cpu->running on one side, and cpu_exec_start() on
+the other, ensures that either the flusher sees the vCPU running and
+queues the work as usual, or the vCPU sees the record. If no vCPU got
+work queued, the source vCPU flushes its own TLB in place, without the
+safe work: none of the others executes before it has flushed.
+
 TLB flag updates are all done atomically and are also protected by the
 corresponding page lock.
 

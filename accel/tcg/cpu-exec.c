@@ -1043,6 +1043,7 @@ int cpu_exec(CPUState *cpu)
         }
         assert(!cpu->halted);
     }
+    tlb_flush_deferred(cpu);
 #endif
 
     RCU_READ_LOCK_GUARD();

@@ -319,6 +319,11 @@ typedef struct CPUTLBCommon {
      */
     MMUIdxMap dirty;
     /*
+     * The mmu indexes other vCPUs flushed while this one was halted, to be
+     * flushed when it next enters cpu_exec().  Accessed atomically.
+     */
+    MMUIdxMap deferred_flush;
+    /*
      * Statistics.  These are not lock protected, but are read and
      * written atomically.  This allows the monitor to print a snapshot
      * of the stats without interfering with the cpu.
