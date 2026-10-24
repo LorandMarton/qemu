@@ -95,6 +95,29 @@ answered with a line starting with ``error:``. For example::
   -chardev socket,id=gpio,path=gpio.sock,server=on,wait=off \
   -global bcm2838-gpio.chardev=gpio
 
+An I2C device can be modelled outside QEMU with the ``i2c-chardev`` device on
+one of the BSC buses: every bus event at its address is sent as a line on
+its chardev, and the program at the other end answers the events that need
+an answer (``AA`` a 7-bit address, ``DD`` a byte, both hexadecimal):
+
+=====================  ==================  =====================================
+Sent                   Answer              Event
+=====================  ==================  =====================================
+``start AA write``     ``ack``/``nack``    the controller addresses the device
+``start AA read``      ``ack``/``nack``
+``send DD``            ``ack``/``nack``    the controller writes a byte
+``recv``               ``DD``              the controller reads a byte
+``nack``                                   the controller NACKed the byte read
+``stop``                                   end of the transfer
+=====================  ==================  =====================================
+
+A repeated start is a ``start`` without a ``stop`` before it. The guest waits
+for each answer. Without a connection the device does not acknowledge its
+address. For example, a device at 0x48 on BSC1::
+
+  -chardev socket,id=sensor,path=sensor.sock,server=on,wait=off \
+  -device i2c-chardev,bus=i2c-bus.1,address=0x48,chardev=sensor
+
 The BCM2711 die temperature is the ``temperature`` property of the thermal
 sensor, in millidegrees Celsius (25000 by default; the range the 10-bit
 sensor code covers, -88161 to 410040); the guest reads the nearest code, and

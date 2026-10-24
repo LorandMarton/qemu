@@ -54,3 +54,8 @@ config PMBUS
 config BCM2835_I2C
     bool
     select I2C
+
+config I2C_CHARDEV
+    bool
+    depends on I2C
+    default y if I2C_DEVICES

@@ -4152,6 +4152,8 @@ F: include/hw/i2c/i2c.h
 F: include/hw/i2c/smbus_master.h
 F: include/hw/i2c/smbus_slave.h
 F: include/hw/i2c/smbus_eeprom.h
+F: hw/i2c/i2c_chardev.c
+F: tests/qtest/i2c-chardev-test.c
 
 I3C
 M: Joe Komlodi <komlodi@google.com>
