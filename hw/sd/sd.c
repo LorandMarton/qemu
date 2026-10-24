@@ -206,6 +206,11 @@ struct SDState {
     uint8_t dat_lines;
     bool cmd_line;
     char *preset_auth_key;
+    /* eMMC identity taken from a real part ("cid", "ext-csd" properties) */
+    char *cid_hex;
+    char *ext_csd_hex;
+    uint8_t preset_cid[15];
+    uint8_t preset_ext_csd[512];
 };
 
 static void sd_realize(DeviceState *dev, Error **errp);
@@ -493,6 +498,9 @@ static void emmc_set_cid(SDState *sd)
     sd->cid[9] = PRV;       /* Fake product revision (PRV) */
     stl_be_p(&sd->cid[10], 0xdeadbeef); /* Fake serial number (PSN) */
     sd->cid[14] = (MDT_MON << 4) | (MDT_YR - 1997); /* Manufacture date (MDT) */
+    if (sd->cid_hex) {
+        memcpy(sd->cid, sd->preset_cid, sizeof(sd->preset_cid));
+    }
     sd->cid[15] = (sd_crc7(sd->cid, 15) << 1) | 1;
 }
 
@@ -541,8 +549,45 @@ static void emmc_set_ext_csd(SDState *sd, uint64_t size)
     sd->ext_csd[EXT_CSD_RPMB_MULT] = sd->rpmb_part_size / (128 * KiB);
     sd->ext_csd[EXT_CSD_PARTITION_SUPPORT] = 0b111;
 
+    if (sd->ext_csd_hex) {
+        /*
+         * Properties segment and the read-only bytes of the modes segment
+         * from a real part; the geometry stays the one of this image.
+         */
+        static const int ro_modes[] = { 157, 158, 159, 160, 166, 174, 181,
+                                        189 };
+
+        memcpy(&sd->ext_csd[192], &sd->preset_ext_csd[192], 512 - 192);
+        for (int i = 0; i < ARRAY_SIZE(ro_modes); i++) {
+            sd->ext_csd[ro_modes[i]] = sd->preset_ext_csd[ro_modes[i]];
+        }
+        stl_le_p(&sd->ext_csd[EXT_CSD_SEC_CNT], sectcount);
+        sd->ext_csd[EXT_CSD_BOOT_MULT] = sd->boot_part_size / (128 * KiB);
+        sd->ext_csd[EXT_CSD_RPMB_MULT] = sd->rpmb_part_size / (128 * KiB);
+    }
+
     /* Mode segment (RW) */
     sd->ext_csd[EXT_CSD_PART_CONFIG] = sd->boot_config;
+}
+
+static bool sd_parse_hex(const char *name, const char *hex, uint8_t *buf,
+                         size_t len, Error **errp)
+{
+    if (strlen(hex) != 2 * len) {
+        error_setg(errp, "%s: expected %zu hex digits", name, 2 * len);
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        int hi = g_ascii_xdigit_value(hex[2 * i]);
+        int lo = g_ascii_xdigit_value(hex[2 * i + 1]);
+
+        if (hi < 0 || lo < 0) {
+            error_setg(errp, "%s: invalid hex digit", name);
+            return false;
+        }
+        buf[i] = hi << 4 | lo;
+    }
+    return true;
 }
 
 static void emmc_set_csd(SDState *sd, uint64_t size)
@@ -3118,6 +3163,17 @@ static void sd_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    if (sd->cid_hex &&
+        !sd_parse_hex("cid", sd->cid_hex, sd->preset_cid,
+                      sizeof(sd->preset_cid), errp)) {
+        return;
+    }
+    if (sd->ext_csd_hex &&
+        !sd_parse_hex("ext-csd", sd->ext_csd_hex, sd->preset_ext_csd,
+                      sizeof(sd->preset_ext_csd), errp)) {
+        return;
+    }
+
     if (sd->blk) {
         if (!blk_supports_write_perm(sd->blk)) {
             error_setg(errp, "Cannot use read-only drive as SD card");
@@ -3224,6 +3280,9 @@ static const Property emmc_properties[] = {
     DEFINE_PROP_UINT8("boot-config", SDState, boot_config, 0x0),
     DEFINE_PROP_UINT64("rpmb-partition-size", SDState, rpmb_part_size, 0),
     DEFINE_PROP_STRING("auth-key", SDState, preset_auth_key),
+    /* CID without CRC (15 bytes) and EXT_CSD (512 bytes) as hex strings */
+    DEFINE_PROP_STRING("cid", SDState, cid_hex),
+    DEFINE_PROP_STRING("ext-csd", SDState, ext_csd_hex),
 };
 
 static void sdmmc_common_class_init(ObjectClass *klass, const void *data)

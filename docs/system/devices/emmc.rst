@@ -54,6 +54,22 @@ SDHCI controllers while assuming that the firmware needs a boot partitions of
     -device sdhci-pci
     -device emmc,drive=emmc-img,boot-partition-size=1048576,rpmb-partition-size=2097152
 
+Identity of a Real Part
+=======================
+
+The ``cid`` and ``ext-csd`` properties give the eMMC the identity of a real
+part, as hex digits: ``cid`` the 15 bytes of the CID register without its
+CRC, which QEMU computes, and ``ext-csd`` the 512 bytes of the EXT_CSD
+register as Linux prints them (``ext_csd`` in the card's debugfs
+directory). Of the EXT_CSD QEMU takes the properties segment and the
+read-only bytes of the modes segment; the sector count, the boot and RPMB
+partition sizes and the partition configuration stay those of the image and
+the device properties.
+
+.. code-block:: console
+
+    -device emmc,[...],cid=150100424a54443452030000000178,ext-csd=$(cat ext_csd.hex)
+
 RPMB Authentication Key
 =======================
 
