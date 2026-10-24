@@ -30,6 +30,8 @@
 #define TAG_SET_GPIO_STATE  0x00038041
 #define TAG_GET_GPIO_CONFIG 0x00030043
 #define TAG_SET_GPIO_CONFIG 0x00038043
+#define TAG_GET_DOMAIN_STATE 0x00030030
+#define TAG_SET_DOMAIN_STATE 0x00038030
 
 /* start4.elf of 2026-09-14, as a CM4 reports it */
 #define FW_REVISION         1789397370
@@ -173,6 +175,31 @@ static void test_gpio_expander(void)
     qtest_quit(qts);
 }
 
+static uint32_t domain_state(QTestState *qts, uint32_t tag, uint32_t domain,
+                             uint32_t state)
+{
+    qtest_writel(qts, BUF_ADDR + 20, domain);
+    qtest_writel(qts, BUF_ADDR + 24, state);
+    g_assert_cmpuint(property(qts, tag, 8), ==, 8);
+    g_assert_cmpuint(qtest_readl(qts, BUF_ADDR + 20), ==, domain);
+    return qtest_readl(qts, BUF_ADDR + 24);
+}
+
+/* The firmware power domains: off at reset, then as set; 32 does not exist */
+static void test_power_domains(void)
+{
+    QTestState *qts = qtest_init("-M raspi4b");
+
+    g_assert_cmpuint(domain_state(qts, TAG_GET_DOMAIN_STATE, 6, 0), ==, 0);
+    g_assert_cmpuint(domain_state(qts, TAG_SET_DOMAIN_STATE, 6, 1), ==, 1);
+    g_assert_cmpuint(domain_state(qts, TAG_GET_DOMAIN_STATE, 6, 0), ==, 1);
+    g_assert_cmpuint(domain_state(qts, TAG_GET_DOMAIN_STATE, 5, 0), ==, 0);
+    g_assert_cmpuint(domain_state(qts, TAG_SET_DOMAIN_STATE, 6, 0), ==, 0);
+    g_assert_cmpuint(domain_state(qts, TAG_GET_DOMAIN_STATE, 6, 1), ==, 0);
+    g_assert_cmpuint(domain_state(qts, TAG_GET_DOMAIN_STATE, 32, 7), ==, 7);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -181,6 +208,7 @@ int main(int argc, char **argv)
     qtest_add_func("/bcm2835-property/firmware/build", test_build);
     qtest_add_func("/bcm2835-property/core-clock", test_core_clock);
     qtest_add_func("/bcm2835-property/gpio-expander", test_gpio_expander);
+    qtest_add_func("/bcm2835-property/power-domains", test_power_domains);
 
     return g_test_run();
 }

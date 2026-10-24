@@ -471,6 +471,34 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
             break;
         }
 
+        /*
+         * Power domains (Linux raspberrypi-power): the domain ID at +12, the
+         * state at +16. Linux only uses the domains beyond the legacy USB one
+         * when GET_DOMAIN_STATE answers (rpi_has_new_domain_support()).
+         */
+        case RPI_FWREQ_GET_DOMAIN_STATE:
+        case RPI_FWREQ_SET_DOMAIN_STATE:
+        {
+            uint32_t domain = ldl_le_phys(&s->dma_as, value + 12);
+
+            resplen = 8;
+            if (domain >= 32) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "bcm2835_property: bad power domain %u\n",
+                              domain);
+                break;
+            }
+            if (tag == RPI_FWREQ_SET_DOMAIN_STATE) {
+                if (ldl_le_phys(&s->dma_as, value + 16) & 1) {
+                    s->domain_on |= BIT(domain);
+                } else {
+                    s->domain_on &= ~BIT(domain);
+                }
+            }
+            stl_le_phys(&s->dma_as, value + 16, !!(s->domain_on & BIT(domain)));
+            break;
+        }
+
         case RPI_FWREQ_VCHIQ_INIT:
             stl_le_phys(&s->dma_as,
                         value + offsetof(rpi_firmware_prop_request_t, payload),
@@ -648,8 +676,8 @@ static const MemoryRegionOps bcm2835_property_ops = {
 
 static const VMStateDescription vmstate_bcm2835_property = {
     .name = TYPE_BCM2835_PROPERTY,
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .fields = (const VMStateField[]) {
         VMSTATE_MACADDR(macaddr, BCM2835PropertyState),
         VMSTATE_UINT32(addr, BCM2835PropertyState),
@@ -660,6 +688,7 @@ static const VMStateDescription vmstate_bcm2835_property = {
         VMSTATE_UINT32_ARRAY(exp_gpio_term_en, BCM2835PropertyState, 8),
         VMSTATE_UINT32_ARRAY(exp_gpio_pull_up, BCM2835PropertyState, 8),
         VMSTATE_UINT32_ARRAY(exp_gpio_state, BCM2835PropertyState, 8),
+        VMSTATE_UINT32(domain_on, BCM2835PropertyState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -686,6 +715,7 @@ static void bcm2835_property_reset(DeviceState *dev)
     BCM2835PropertyState *s = BCM2835_PROPERTY(dev);
 
     s->pending = false;
+    s->domain_on = 0;
     for (int i = 0; i < ARRAY_SIZE(bcm2711_fw_clocks); i++) {
         s->clk_rate[bcm2711_fw_clocks[i].id] = bcm2711_fw_clocks[i].rate;
     }

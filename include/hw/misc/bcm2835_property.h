@@ -44,6 +44,7 @@ struct BCM2835PropertyState {
     uint32_t exp_gpio_term_en[8];
     uint32_t exp_gpio_pull_up[8];
     uint32_t exp_gpio_state[8];
+    uint32_t domain_on; /* firmware power domains, bit = RPI_POWER_DOMAIN_* */
     uint32_t addr;
     char *command_line;
     char *vc_config_file;
