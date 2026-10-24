@@ -264,10 +264,42 @@ static void bcm2838_pcie_root_port_reset_hold(Object *obj, ResetType type)
     memset(s->regs, 0xFF, sizeof(s->regs));
 }
 
+/*
+ * As the BCM2711's: no hot-plug, no extended tags, power management with
+ * PME from D0 and D3hot. Linux then sizes no bridge windows for the empty
+ * link and leaves the port disabled.
+ */
+#define BCM2838_PCIE_PM_CAP_OFFSET  0x48
+
 static void bcm2838_pcie_root_init(Object *obj)
 {
     PCIBridge *br = PCI_BRIDGE(obj);
     br->bus_name = "pcie.1";
+
+    PCIE_SLOT(obj)->hotplug = false;
+    PCI_DEVICE(obj)->cap_present &= ~QEMU_PCIE_EXT_TAG;
+}
+
+static void bcm2838_pcie_root_realize(DeviceState *dev, Error **errp)
+{
+    ERRP_GUARD();
+    PCIERootPortClass *rpc = PCIE_ROOT_PORT_GET_CLASS(dev);
+    PCIDevice *d = PCI_DEVICE(dev);
+    int pm;
+
+    rpc->parent_realize(dev, errp);
+    if (*errp) {
+        return;
+    }
+    pm = pci_pm_init(d, BCM2838_PCIE_PM_CAP_OFFSET, errp);
+    if (pm < 0) {
+        return;
+    }
+    pci_set_word(d->config + pm + PCI_PM_PMC, PCI_PM_CAP_VER_1_2 |
+                 PCI_PM_CAP_PME_D0 | PCI_PM_CAP_PME_D3hot);
+    pci_set_word(d->wmask + pm + PCI_PM_CTRL,
+                 PCI_PM_CTRL_STATE_MASK | PCI_PM_CTRL_PME_ENABLE);
+    pci_set_word(d->w1cmask + pm + PCI_PM_CTRL, PCI_PM_CTRL_PME_STATUS);
 }
 
 static const VMStateDescription vmstate_bcm2838_pcie_root = {
@@ -295,6 +327,8 @@ static void bcm2838_pcie_root_class_init(ObjectClass *class, const void *data)
 
     dc->desc = "BCM2711 PCIe Bridge";
     dc->vmsd = &vmstate_bcm2838_pcie_root;
+    device_class_set_parent_realize(dc, bcm2838_pcie_root_realize,
+                                    &rpc->parent_realize);
 
     resettable_class_set_parent_phases(rc, NULL,
                                        bcm2838_pcie_root_port_reset_hold,
