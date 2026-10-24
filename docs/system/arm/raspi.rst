@@ -192,3 +192,7 @@ The firmware reports the framebuffer as a display on HDMI0 (the
 ``raspicm4`` it is 0, as on a Compute Module 4 without a monitor: Linux's
 ``bcm2708_fb`` then disables itself and ``snd_bcm2835`` adds no HDMI sound
 card. ``-global bcm2835-property.num-displays=1`` gives it the framebuffer.
+
+The Compute Module 4 IO board has a USB2514 hub on the xHCI port; it can be
+added with ``-device usb2514,port=1,id=hub``, and devices plugged in behind
+it with ``port=1.1`` to ``port=1.4``.

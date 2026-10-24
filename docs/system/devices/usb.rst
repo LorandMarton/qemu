@@ -218,6 +218,12 @@ option or the ``device_add`` monitor command. Available devices are:
    An Open-source Secure Key implementing FIDO2, OpenPGP, PIV and more.
    For more information, see :ref:`canokey`.
 
+``usb2514``
+   Microchip USB2514 four-port USB 2.0 hub, with the descriptors of the
+   chip: high-speed on a USB 2.0 port, full-speed devices behind it. Plug
+   it in with an explicit ``port``, or QEMU adds a ``usb-hub`` for it when
+   it takes the last free port.
+
 Physical port addressing
 ^^^^^^^^^^^^^^^^^^^^^^^^
 

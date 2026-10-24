@@ -51,8 +51,19 @@ struct USBHubState {
     USBHubPort ports[MAX_PORTS];
 };
 
+/* What differs between hub models */
+struct USBHubClass {
+    USBDeviceClass parent_class;
+
+    uint8_t pwr_on_2_pwr_good;      /* hub descriptor, 2 ms units */
+    uint8_t hub_contr_current;      /* hub descriptor, mA */
+    int port_speedmask;             /* speeds the downstream ports take */
+};
+
 #define TYPE_USB_HUB "usb-hub"
-OBJECT_DECLARE_SIMPLE_TYPE(USBHubState, USB_HUB)
+OBJECT_DECLARE_TYPE(USBHubState, USBHubClass, USB_HUB)
+
+#define TYPE_USB2514 "usb2514"
 
 #define ClearHubFeature         (0x2000 | USB_REQ_CLEAR_FEATURE)
 #define ClearPortFeature        (0x2300 | USB_REQ_CLEAR_FEATURE)
@@ -153,6 +164,105 @@ static const USBDesc desc_hub = {
     .str  = desc_strings,
 };
 
+/*
+ * Microchip (SMSC) USB2514 USB 2.0 hub with four ports, as on the
+ * Raspberry Pi Compute Module 4 IO board: descriptors read from one.
+ */
+#define USB2514_PORTS 4
+
+static const USBDescIface desc_iface_usb2514[] = {
+    {
+        .bInterfaceNumber          = 0,
+        .bAlternateSetting         = 0,
+        .bNumEndpoints             = 1,
+        .bInterfaceClass           = USB_CLASS_HUB,
+        .bInterfaceProtocol        = 1,     /* single TT */
+        .eps = (USBDescEndpoint[]) {
+            {
+                .bEndpointAddress  = USB_DIR_IN | 0x01,
+                .bmAttributes      = USB_ENDPOINT_XFER_INT,
+                .wMaxPacketSize    = 1,
+                .bInterval         = 12,    /* 256 ms */
+            },
+        },
+    }, {
+        .bInterfaceNumber          = 0,
+        .bAlternateSetting         = 1,
+        .bNumEndpoints             = 1,
+        .bInterfaceClass           = USB_CLASS_HUB,
+        .bInterfaceProtocol        = 2,     /* TT per port */
+        .eps = (USBDescEndpoint[]) {
+            {
+                .bEndpointAddress  = USB_DIR_IN | 0x01,
+                .bmAttributes      = USB_ENDPOINT_XFER_INT,
+                .wMaxPacketSize    = 1,
+                .bInterval         = 12,
+            },
+        },
+    },
+};
+
+static const USBDescIface desc_iface_usb2514_full = {
+    .bInterfaceNumber              = 0,
+    .bNumEndpoints                 = 1,
+    .bInterfaceClass               = USB_CLASS_HUB,
+    .eps = (USBDescEndpoint[]) {
+        {
+            .bEndpointAddress      = USB_DIR_IN | 0x01,
+            .bmAttributes          = USB_ENDPOINT_XFER_INT,
+            .wMaxPacketSize        = 1,
+            .bInterval             = 0xff,
+        },
+    },
+};
+
+static const USBDescDevice desc_device_usb2514_high = {
+    .bcdUSB                        = 0x0200,
+    .bDeviceClass                  = USB_CLASS_HUB,
+    .bDeviceProtocol               = 2,     /* TT per port */
+    .bMaxPacketSize0               = 64,
+    .bNumConfigurations            = 1,
+    .confs = (USBDescConfig[]) {
+        {
+            .bNumInterfaces        = 1,
+            .bConfigurationValue   = 1,
+            .bmAttributes          = USB_CFG_ATT_ONE | USB_CFG_ATT_SELFPOWER |
+                                     USB_CFG_ATT_WAKEUP,
+            .bMaxPower             = 1,     /* 2 mA */
+            .nif = ARRAY_SIZE(desc_iface_usb2514),
+            .ifs = desc_iface_usb2514,
+        },
+    },
+};
+
+static const USBDescDevice desc_device_usb2514_full = {
+    .bcdUSB                        = 0x0200,
+    .bDeviceClass                  = USB_CLASS_HUB,
+    .bMaxPacketSize0               = 64,
+    .bNumConfigurations            = 1,
+    .confs = (USBDescConfig[]) {
+        {
+            .bNumInterfaces        = 1,
+            .bConfigurationValue   = 1,
+            .bmAttributes          = USB_CFG_ATT_ONE | USB_CFG_ATT_SELFPOWER |
+                                     USB_CFG_ATT_WAKEUP,
+            .bMaxPower             = 1,
+            .nif = 1,
+            .ifs = &desc_iface_usb2514_full,
+        },
+    },
+};
+
+static const USBDesc desc_usb2514 = {
+    .id = {
+        .idVendor          = 0x0424,
+        .idProduct         = 0x2514,
+        .bcdDevice         = 0x0bb3,
+    },
+    .full = &desc_device_usb2514_full,
+    .high = &desc_device_usb2514_high,
+};
+
 static const uint8_t qemu_hub_hub_descriptor[] =
 {
         0x00,                   /*  u8  bLength; patched in later */
@@ -205,6 +315,11 @@ static bool usb_hub_port_update(USBHubPort *port)
             usb_hub_port_set(port, PORT_STAT_LOW_SPEED);
         } else {
             usb_hub_port_clear(port, PORT_STAT_LOW_SPEED);
+        }
+        if (port->port.dev->speed == USB_SPEED_HIGH) {
+            usb_hub_port_set(port, PORT_STAT_HIGH_SPEED);
+        } else {
+            usb_hub_port_clear(port, PORT_STAT_HIGH_SPEED);
         }
     }
     return notify;
@@ -487,10 +602,13 @@ static void usb_hub_handle_control(USBDevice *dev, USBPacket *p,
         break;
     case GetHubDescriptor:
         {
+            USBHubClass *hc = USB_HUB_GET_CLASS(s);
             unsigned int n, limit, var_hub_size = 0;
             memcpy(data, qemu_hub_hub_descriptor,
                    sizeof(qemu_hub_hub_descriptor));
             data[2] = s->num_ports;
+            data[5] = hc->pwr_on_2_pwr_good;
+            data[6] = hc->hub_contr_current;
 
             if (s->port_power) {
                 data[3] &= ~0x03;
@@ -591,6 +709,7 @@ static USBPortOps usb_hub_port_ops = {
 static void usb_hub_realize(USBDevice *dev, Error **errp)
 {
     USBHubState *s = USB_HUB(dev);
+    USBHubClass *hc = USB_HUB_GET_CLASS(s);
     USBHubPort *port;
     int i;
 
@@ -605,7 +724,9 @@ static void usb_hub_realize(USBDevice *dev, Error **errp)
         return;
     }
 
-    usb_desc_create_serial(dev);
+    if (usb_device_get_usb_desc(dev)->id.iSerialNumber) {
+        usb_desc_create_serial(dev);
+    }
     usb_desc_init(dev);
     s->port_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                  usb_hub_port_update_timer, s);
@@ -614,7 +735,7 @@ static void usb_hub_realize(USBDevice *dev, Error **errp)
         port = &s->ports[i];
         usb_register_port(usb_bus_from_device(dev),
                           &port->port, s, i, &usb_hub_port_ops,
-                          USB_SPEED_MASK_LOW | USB_SPEED_MASK_FULL);
+                          hc->port_speedmask);
         usb_port_location(&port->port, dev->port, i+1);
     }
     usb_hub_handle_reset(dev);
@@ -674,11 +795,13 @@ static void usb_hub_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
+    USBHubClass *hc = USB_HUB_CLASS(klass);
 
     uc->realize        = usb_hub_realize;
     uc->product_desc   = "QEMU USB Hub";
     uc->usb_desc       = &desc_hub;
     uc->find_device    = usb_hub_find_device;
+    uc->handle_attach  = usb_desc_attach;
     uc->handle_reset   = usb_hub_handle_reset;
     uc->handle_control = usb_hub_handle_control;
     uc->handle_data    = usb_hub_handle_data;
@@ -687,18 +810,47 @@ static void usb_hub_class_initfn(ObjectClass *klass, const void *data)
     dc->fw_name = "hub";
     dc->vmsd = &vmstate_usb_hub;
     device_class_set_props(dc, usb_hub_properties);
+    hc->pwr_on_2_pwr_good = 1;
+    hc->hub_contr_current = 0;
+    hc->port_speedmask = USB_SPEED_MASK_LOW | USB_SPEED_MASK_FULL;
 }
 
-static const TypeInfo hub_info = {
-    .name          = TYPE_USB_HUB,
-    .parent        = TYPE_USB_DEVICE,
-    .instance_size = sizeof(USBHubState),
-    .class_init    = usb_hub_class_initfn,
+static void usb2514_init(Object *obj)
+{
+    USBHubState *s = USB_HUB(obj);
+
+    s->num_ports = USB2514_PORTS;
+    s->port_power = true;
+}
+
+static void usb2514_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
+    USBHubClass *hc = USB_HUB_CLASS(klass);
+
+    dc->desc = "Microchip USB2514 USB 2.0 hub";
+    uc->product_desc = "USB2514";
+    uc->usb_desc = &desc_usb2514;
+    hc->pwr_on_2_pwr_good = 50;     /* 100 ms */
+    hc->hub_contr_current = 1;
+    hc->port_speedmask = USB_SPEED_MASK_LOW | USB_SPEED_MASK_FULL |
+                         USB_SPEED_MASK_HIGH;
+}
+
+static const TypeInfo hub_types[] = {
+    {
+        .name          = TYPE_USB_HUB,
+        .parent        = TYPE_USB_DEVICE,
+        .instance_size = sizeof(USBHubState),
+        .class_size    = sizeof(USBHubClass),
+        .class_init    = usb_hub_class_initfn,
+    }, {
+        .name          = TYPE_USB2514,
+        .parent        = TYPE_USB_HUB,
+        .instance_init = usb2514_init,
+        .class_init    = usb2514_class_init,
+    },
 };
 
-static void usb_hub_register_types(void)
-{
-    type_register_static(&hub_info);
-}
-
-type_init(usb_hub_register_types)
+DEFINE_TYPES(hub_types)
