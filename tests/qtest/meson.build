@@ -290,6 +290,8 @@ qtests_aarch64 = \
                                                     'bcm2838-spi-test'] : []) +  \
   (config_all_devices.has_key('CONFIG_RASPI') and host_os != 'windows' and
    config_all_devices.has_key('CONFIG_I2C_CHARDEV') ? ['i2c-chardev-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_RASPI') and host_os != 'windows' and
+   config_all_devices.has_key('CONFIG_SPI_CHARDEV') ? ['spi-chardev-test'] : []) + \
   (config_all_accel.has_key('CONFIG_TCG') and                                            \
    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test', 'tpm-tis-i2c-swtpm-test'] : []) + \
   (config_all_devices.has_key('CONFIG_ASPEED_SOC') ? qtests_aspeed64 : []) + \

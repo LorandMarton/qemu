@@ -127,6 +127,30 @@ pin's SPI function the controller drives it, otherwise it is a GPIO (Linux
 ``cs-gpios``) or follows its pull. SPI0's bus is ``spi``, the others are
 ``spi3`` to ``spi6``.
 
+An SPI device can be modelled outside QEMU with the ``spi-chardev`` device:
+the traffic of the device is sent as lines on its chardev, and the program
+at the other end answers the bytes (``DD`` hexadecimal):
+
+====================  ==============  =====================================
+Sent                  Answer          Event
+====================  ==============  =====================================
+``select``                            chip select asserted
+``xfer DD [DD...]``   ``DD [DD...]``  bytes out, for each the byte the
+                                      device shifts back while it receives
+                                      it
+``deselect``                          chip select released
+====================  ==============  =====================================
+
+The controller sends the bytes it has queued in one line, up to its FIFO
+(64 bytes): it shifts them out when the guest waits for them (status or
+FIFO reads, chip select changes), so the guest sees the FIFO fill as on a
+bus slower than the CPU. An answer byte may depend on the bytes sent before
+it only. The guest waits for each answer. Without a connection the device
+answers 0x00. For example, a device on SPI3 CE0 (``spi3-1cs``)::
+
+  -chardev socket,id=adc,path=adc.sock,server=on,wait=off \
+  -device spi-chardev,bus=spi3,cs=0,chardev=adc
+
 The BCM2711 die temperature is the ``temperature`` property of the thermal
 sensor, in millidegrees Celsius (25000 by default; the range the 10-bit
 sensor code covers, -88161 to 410040); the guest reads the nearest code, and
