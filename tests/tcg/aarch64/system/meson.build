@@ -42,6 +42,11 @@ tests += {
 tests += {
   'asid2.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
   'asid-tlb.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
+  'crypto-off.c': {
+    'cflags': cflags,
+    'qemu_args': ['-M', 'virt', '-cpu', 'cortex-a72,crypto=off',
+                  qemu_base_args],
+  },
   'feat-xs.c': {'cflags': cflags, 'qemu_args': qemu_def_args},
   'gpc-test.c': {
     'cflags': [cflags, '-DLOGGING_VECTOR_TABLE',

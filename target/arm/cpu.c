@@ -1334,6 +1334,9 @@ static const Property arm_cpu_has_neon_property =
 static const Property arm_cpu_has_dsp_property =
             DEFINE_PROP_BOOL("dsp", ARMCPU, has_dsp, true);
 
+static const Property arm_cpu_has_crypto_property =
+            DEFINE_PROP_BOOL("crypto", ARMCPU, has_crypto, true);
+
 #ifndef CONFIG_USER_ONLY
 static const Property arm_cpu_has_mpu_property =
             DEFINE_PROP_BOOL("has-mpu", ARMCPU, has_mpu, true);
@@ -1657,6 +1660,17 @@ static void arm_cpu_post_init(Object *obj)
     if (arm_feature(&cpu->env, ARM_FEATURE_M) &&
         arm_feature(&cpu->env, ARM_FEATURE_THUMB_DSP)) {
         qdev_property_add_static(DEVICE(obj), &arm_cpu_has_dsp_property);
+    }
+
+    /*
+     * The Cryptographic Extension is optional in an Armv8-A implementation
+     * (the BCM2711 has Cortex-A72 cores without it): allow a board to turn
+     * it off, for TCG only, as with VFP and Neon.
+     */
+    cpu->has_crypto = true;
+    if ((cpu_isar_feature(aa64_aes, cpu) || cpu_isar_feature(aa32_aes, cpu))
+        && (tcg_enabled() || qtest_enabled())) {
+        qdev_property_add_static(DEVICE(obj), &arm_cpu_has_crypto_property);
     }
 
 #ifndef CONFIG_USER_ONLY
@@ -2108,6 +2122,26 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
         u = cpu->isar.mvfr1;
         u = FIELD_DP32(u, MVFR1, SIMDFMAC, 0);
         cpu->isar.mvfr1 = u;
+    }
+
+    if (!cpu->has_crypto) {
+        uint64_t t;
+        uint32_t u;
+
+        t = GET_IDREG(isar, ID_AA64ISAR0);
+        t = FIELD_DP64(t, ID_AA64ISAR0, AES, 0);
+        t = FIELD_DP64(t, ID_AA64ISAR0, SHA1, 0);
+        t = FIELD_DP64(t, ID_AA64ISAR0, SHA2, 0);
+        t = FIELD_DP64(t, ID_AA64ISAR0, SHA3, 0);
+        t = FIELD_DP64(t, ID_AA64ISAR0, SM3, 0);
+        t = FIELD_DP64(t, ID_AA64ISAR0, SM4, 0);
+        SET_IDREG(isar, ID_AA64ISAR0, t);
+
+        u = GET_IDREG(isar, ID_ISAR5);
+        u = FIELD_DP32(u, ID_ISAR5, AES, 0);
+        u = FIELD_DP32(u, ID_ISAR5, SHA1, 0);
+        u = FIELD_DP32(u, ID_ISAR5, SHA2, 0);
+        SET_IDREG(isar, ID_ISAR5, u);
     }
 
     if (arm_feature(env, ARM_FEATURE_M) && !cpu->has_dsp) {

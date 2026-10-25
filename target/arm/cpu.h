@@ -1043,6 +1043,8 @@ struct ArchCPU {
     bool has_neon;
     /* CPU has M-profile DSP extension */
     bool has_dsp;
+    /* CPU has the Cryptographic Extension */
+    bool has_crypto;
     /* CPU has FEAT_GCIE GICv5 CPU interface */
     bool has_gcie;
 
