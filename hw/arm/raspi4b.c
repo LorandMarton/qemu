@@ -223,6 +223,8 @@ static void raspicm4_machine_class_init(ObjectClass *oc, const void *data)
     raspi_machine_class_common_init(mc, rmc->board_rev);
     mc->auto_create_sdcard = true;
     mc->init = raspicm4_machine_init;
+    /* Cortex-A72: no 1K tiny pages, as on virt */
+    mc->minimum_page_bits = 12;
     compat_props_add(mc->compat_props, raspicm4_compat_defaults,
                      G_N_ELEMENTS(raspicm4_compat_defaults));
 }
@@ -236,6 +238,8 @@ static void raspi4b_machine_class_init(ObjectClass *oc, const void *data)
     raspi_machine_class_common_init(mc, rmc->board_rev);
     mc->auto_create_sdcard = true;
     mc->init = raspi4b_machine_init;
+    /* Cortex-A72: no 1K tiny pages, as on virt */
+    mc->minimum_page_bits = 12;
 }
 
 static const TypeInfo raspi4b_machine_type = {
