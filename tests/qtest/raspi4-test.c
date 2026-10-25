@@ -3,7 +3,8 @@
  *
  * raspicm4 as a CM4 Rev 1.0 8 GiB reports itself: the board revision and
  * the ARM memory below the VideoCore carve-out; the generic timer at the
- * 54 MHz crystal frequency; the device tree as the firmware passes it:
+ * 54 MHz crystal frequency, and Cortex-A72 cores without the
+ * Cryptographic Extension; the device tree as the firmware passes it:
  * the firmware's memory ranges and seeds, packed, just below the initrd.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -337,6 +338,22 @@ static void test_cntfrq(const void *machine)
     qtest_quit(qts);
 }
 
+static void test_no_crypto(const void *machine)
+{
+    QTestState *qts = qtest_initf("-M %s", (const char *)machine);
+    QDict *rsp;
+
+    for (int n = 0; n < 4; n++) {
+        g_autofree char *path = g_strdup_printf("/machine/soc/cpu[%d]", n);
+
+        rsp = qtest_qmp(qts, "{ 'execute': 'qom-get', 'arguments': "
+                        "{ 'path': %s, 'property': 'crypto' } }", path);
+        g_assert(!qdict_get_bool(rsp, "return"));
+        qobject_unref(rsp);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -344,5 +361,9 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi4/cm4/dtb", test_cm4_dtb);
     qtest_add_data_func("/raspi4/raspi4b/cntfrq", "raspi4b", test_cntfrq);
     qtest_add_data_func("/raspi4/raspicm4/cntfrq", "raspicm4", test_cntfrq);
+    qtest_add_data_func("/raspi4/raspi4b/no-crypto", "raspi4b",
+                        test_no_crypto);
+    qtest_add_data_func("/raspi4/raspicm4/no-crypto", "raspicm4",
+                        test_no_crypto);
     return g_test_run();
 }

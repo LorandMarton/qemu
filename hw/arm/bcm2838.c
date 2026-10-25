@@ -98,6 +98,12 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
         object_property_set_int(OBJECT(&s_base->cpu[n].core), "reset-cbar",
                                 bc_base->peri_base, &error_abort);
 
+        /* The BCM2711's Cortex-A72 cores lack the Cryptographic Extension */
+        if (object_property_find(OBJECT(&s_base->cpu[n].core), "crypto")) {
+            object_property_set_bool(OBJECT(&s_base->cpu[n].core), "crypto",
+                                     false, &error_abort);
+        }
+
         /* start powered off if not enabled */
         object_property_set_bool(OBJECT(&s_base->cpu[n].core),
                                  "start-powered-off",
