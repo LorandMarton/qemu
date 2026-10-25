@@ -11,6 +11,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 #define CPRMAN_BASE     0xfe101000
 #define CM_TIMERCTL     0x0e8
@@ -27,6 +28,8 @@
 #define A2W_PLLD_PER    0x1540
 
 #define XOSC_HZ         54000000ULL
+#define A2W_PASSWORD    0x5a000000
+#define CPRMAN_PATH     "/machine/soc/peripherals/cprman"
 #define CM_SRC_PLLD     6
 #define CM_ENAB         BIT(4)
 
@@ -69,6 +72,19 @@ static uint64_t qemu_clock_hz(QTestState *qts, const char *clock)
     return v * 1000000;
 }
 
+/* The frequency of a clock, from its period in 2^-32 ns */
+static uint64_t clock_hz(QTestState *qts, const char *path)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'qom-get', 'arguments': "
+                           "{ 'path': %s, 'property': 'qtest-clock-period' } }",
+                           path);
+    uint64_t period = qdict_get_int(rsp, "return");
+
+    qobject_unref(rsp);
+    g_assert_cmpuint(period, !=, 0);
+    return (1000000000ULL << 32) / period;
+}
+
 static void test_reset(void)
 {
     QTestState *qts = qtest_init("-M raspi4b");
@@ -106,12 +122,28 @@ static void test_uart_clock(void)
     qtest_quit(qts);
 }
 
+/* A PLL channel divider of 0 divides by 256 */
+static void test_channel_div_zero(void)
+{
+    QTestState *qts = qtest_init("-M raspi4b");
+    uint32_t per = cm_read(qts, A2W_PLLD_PER);
+    uint64_t pll_hz, chan_hz;
+
+    qtest_writel(qts, CPRMAN_BASE + A2W_PLLD_PER,
+                 A2W_PASSWORD | (per & ~0xffu));
+    pll_hz = clock_hz(qts, CPRMAN_PATH "/plld/out");
+    chan_hz = clock_hz(qts, CPRMAN_PATH "/plld-per/out");
+    g_assert_cmpuint((pll_hz + chan_hz / 2) / chan_hz, ==, 256);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("/bcm2838-cprman/reset", test_reset);
     qtest_add_func("/bcm2838-cprman/uart-clock", test_uart_clock);
+    qtest_add_func("/bcm2838-cprman/channel-div-zero", test_channel_div_zero);
 
     return g_test_run();
 }
