@@ -439,6 +439,7 @@ static void bcm2835_spi_reset(DeviceState *dev)
     s->ltoh = 0x1;
     s->dc = 0x30201020;
 
+    bcm2835_spi_update_int(s);
     bcm2835_spi_update_ce(s);
     bcm2835_spi_update_dreq(s);
 }

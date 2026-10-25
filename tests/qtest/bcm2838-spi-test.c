@@ -114,6 +114,24 @@ static void test_transfer_irq(void)
     qtest_quit(qts);
 }
 
+/* A reset in the middle of a transfer drops the interrupt */
+static void test_reset_irq(void)
+{
+    QTestState *qts = qtest_init("-M raspi4b");
+
+    qtest_irq_intercept_out_named(qts, "/machine/soc/peripherals/bcm2835-spi0",
+                                  "sysbus-irq");
+    qtest_writel(qts, SPI0_BASE + SPI_CS, CS_CLEAR_RXTX | CS_TA);
+    qtest_writel(qts, SPI0_BASE + SPI_FIFO, 0xa5);
+    qtest_writel(qts, SPI0_BASE + SPI_CS, CS_TA | CS_INTD);
+    g_assert_true(qtest_get_irq(qts, 0));
+
+    qtest_system_reset(qts);
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    qtest_quit(qts);
+}
+
 static void cs_pin_function(QTestState *qts, uint32_t fsel)
 {
     uint32_t v = qtest_readl(qts, GPIO_BASE + GPFSEL0);
@@ -346,6 +364,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("/bcm2838-spi/transfer-irq", test_transfer_irq);
+    qtest_add_func("/bcm2838-spi/reset-irq", test_reset_irq);
     qtest_add_func("/bcm2838-spi/dma", test_dma);
     qtest_add_func("/bcm2838-spi/native-ce", test_native_ce);
     qtest_add_func("/bcm2838-spi/spi3", test_spi3);
