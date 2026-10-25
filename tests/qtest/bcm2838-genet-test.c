@@ -21,6 +21,7 @@
 #define RDMA_RING(r)        (0x2c00 + (r) * 0x40)
 #define RING_WRITE_PTR      0x00
 #define RING_PROD_INDEX     0x08
+#define RING_CONS_INDEX     0x0c
 #define RING_BUF_SIZE       0x10
 #define RING_START_ADDR     0x14
 #define RING_END_ADDR       0x1c
@@ -153,12 +154,35 @@ static uint32_t prod_index(QTestState *qts, unsigned r)
     return genet_readl(qts, RDMA_RING(r) + RING_PROD_INDEX) & 0xffff;
 }
 
+/* Send a broadcast frame into the socket netdev */
+static void send_frame(int fd, uint16_t ethertype, uint8_t byte14,
+                       uint8_t *frame)
+{
+    uint8_t pkt[4 + FRAME_LEN] = { 0 };
+
+    stl_be_p(pkt, FRAME_LEN);
+    memset(pkt + 4, 0xff, 6);
+    stw_be_p(pkt + 4 + 12, ethertype);
+    pkt[4 + 14] = byte14;
+    g_assert_cmpint(send(fd, pkt, sizeof(pkt), 0), ==, sizeof(pkt));
+    if (frame) {
+        memcpy(frame, pkt + 4, FRAME_LEN);
+    }
+}
+
+/* The byte at 14 of the frame that descriptor I of ring group G holds */
+static uint8_t rx_byte14(QTestState *qts, unsigned group, unsigned i)
+{
+    return qtest_readb(qts, BUF_BASE +
+                       (group * DESCS_PER_RING + i) * BUF_SIZE +
+                       STATUS_LEN + 2 + 14);
+}
+
 /* Send a broadcast frame; return the ring it arrived on */
 static unsigned genet_rx(QTestState *qts, int fd, uint16_t ethertype,
                          uint8_t byte14)
 {
-    uint8_t pkt[4 + FRAME_LEN] = { 0 };
-    uint8_t *frame = pkt + 4;
+    uint8_t frame[FRAME_LEN];
     uint32_t before[ARRAY_SIZE(rings)];
     uint8_t back[FRAME_LEN];
     gint64 end = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
@@ -167,11 +191,7 @@ static unsigned genet_rx(QTestState *qts, int fd, uint16_t ethertype,
     for (unsigned i = 0; i < ARRAY_SIZE(rings); i++) {
         before[i] = prod_index(qts, rings[i]);
     }
-    stl_be_p(pkt, FRAME_LEN);
-    memset(frame, 0xff, 6);
-    stw_be_p(frame + 12, ethertype);
-    frame[14] = byte14;
-    g_assert_cmpint(send(fd, pkt, sizeof(pkt), 0), ==, sizeof(pkt));
+    send_frame(fd, ethertype, byte14, frame);
 
     do {
         qtest_clock_step(qts, 100);
@@ -212,6 +232,51 @@ static void test_filter(void)
     g_assert_cmpuint(genet_rx(qts, fd, 0x88b5, 0x45), ==, RING_LOW);
     genet_writel(qts, HFB_CTRL, 0);
     g_assert_cmpuint(genet_rx(qts, fd, 0x88b5, 0x45), ==, DEFAULT_RING);
+
+    qtest_quit(qts);
+    close(fd);
+}
+
+/* Wait up to MS milliseconds for the producer index of ring R to be N */
+static bool wait_prod_index(QTestState *qts, unsigned r, uint32_t n,
+                            unsigned ms)
+{
+    gint64 end = g_get_monotonic_time() + ms * G_TIME_SPAN_MILLISECOND;
+
+    do {
+        qtest_clock_step(qts, 100);
+        if (prod_index(qts, r) == n) {
+            return true;
+        }
+    } while (g_get_monotonic_time() < end);
+    return false;
+}
+
+/* A full RX ring keeps the next frames until the guest frees descriptors */
+static void test_rx_ring_full(void)
+{
+    const unsigned group = 2;   /* the default ring's descriptors */
+    const unsigned n = DESCS_PER_RING + 2;
+    int fd;
+    QTestState *qts = genet_init(&fd);
+
+    g_assert_cmpuint(rings[group], ==, DEFAULT_RING);
+    for (unsigned i = 0; i < n; i++) {
+        send_frame(fd, 0x0800, i, NULL);
+    }
+    g_assert(wait_prod_index(qts, DEFAULT_RING, DESCS_PER_RING, 5000));
+    /* the rest must not overwrite descriptors the guest has not read */
+    g_assert(!wait_prod_index(qts, DEFAULT_RING, DESCS_PER_RING + 1, 500));
+    for (unsigned i = 0; i < DESCS_PER_RING; i++) {
+        g_assert_cmpuint(rx_byte14(qts, group, i), ==, i);
+    }
+
+    genet_writel(qts, RDMA_RING(DEFAULT_RING) + RING_CONS_INDEX, 2);
+    g_assert(wait_prod_index(qts, DEFAULT_RING, n, 5000));
+    for (unsigned i = 0; i < n; i++) {
+        g_assert_cmpuint(rx_byte14(qts, group, i % DESCS_PER_RING), ==,
+                         i < 2 ? i + DESCS_PER_RING : i);
+    }
 
     qtest_quit(qts);
     close(fd);
@@ -273,6 +338,7 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/bcm2838-genet/filter", test_filter);
+    qtest_add_func("/bcm2838-genet/rx-ring-full", test_rx_ring_full);
     qtest_add_func("/bcm2838-genet/tx-index-wrap", test_tx_index_wrap);
     return g_test_run();
 }
